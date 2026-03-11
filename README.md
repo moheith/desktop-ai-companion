@@ -1,4 +1,4 @@
-# desktop-ai-companion
+# How To Use
 This my desktop mate which has AI memory
 
 # Desktop AI Companion
