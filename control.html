@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&family=Klee+One:wght@400;600&display=swap');
+:root{
+  --bg:#08080f;--s1:#0f0f18;--s2:#161622;--s3:#1d1d2e;--border:#22223a;
+  --pink:#f472b6;--pink-dim:#be185d;--text:#eeeef5;--muted:#52526a;--muted2:#3a3a52;
+  --green:#34d399;--red:#f87171;--yellow:#fbbf24;--purple:#a78bfa;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;background:var(--bg);color:var(--text);
+  font-family:'Outfit',sans-serif;font-size:13px;overflow:hidden;user-select:none;}
+#app{display:flex;flex-direction:column;height:100vh;}
+
+/* titlebar */
+#titlebar{flex-shrink:0;height:52px;background:var(--s1);border-bottom:1px solid var(--border);
+  padding:0 14px;display:flex;align-items:center;justify-content:space-between;-webkit-app-region:drag;}
+.t-left{display:flex;align-items:center;gap:10px;pointer-events:none;}
+.logo{width:32px;height:32px;background:linear-gradient(135deg,#f472b6,#a78bfa);border-radius:10px;
+  display:flex;align-items:center;justify-content:center;font-size:16px;}
+.t-name{font-size:14px;font-weight:700;} .t-sub{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;}
+.win-btns{display:flex;gap:5px;-webkit-app-region:no-drag;}
+.wbtn{width:24px;height:24px;background:var(--s2);border:1px solid var(--border);border-radius:5px;
+  color:var(--muted);cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+.wbtn.min:hover{background:var(--yellow);color:#000;border-color:var(--yellow);}
+.wbtn.max:hover{background:var(--green);color:#000;border-color:var(--green);}
+.wbtn.cls:hover{background:var(--red);color:#fff;border-color:var(--red);}
+
+/* tabs */
+#tabs{flex-shrink:0;display:flex;background:var(--s1);border-bottom:1px solid var(--border);padding:0 14px;gap:2px;}
+.tab{padding:9px 14px;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;transition:all 0.15s;display:flex;align-items:center;gap:5px;white-space:nowrap;}
+.tab:hover{color:var(--text);} .tab.active{color:var(--pink);border-bottom-color:var(--pink);}
+
+/* pages */
+#pages{flex:1;overflow:hidden;position:relative;}
+.page{position:absolute;inset:0;display:flex;flex-direction:column;
+  opacity:0;pointer-events:none;transform:translateX(16px);transition:opacity 0.18s,transform 0.18s;}
+.page.active{opacity:1;pointer-events:all;transform:translateX(0);}
+
+/* scrollable page content */
+.scroll-page{overflow-y:auto;overflow-x:hidden;padding:12px;gap:10px;display:flex;flex-direction:column;}
+.scroll-page::-webkit-scrollbar{width:3px;}
+.scroll-page::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* sections */
+.section{background:var(--s1);border:1px solid var(--border);border-radius:10px;overflow:hidden;flex-shrink:0;}
+.sec-title{padding:7px 12px;background:var(--s2);border-bottom:1px solid var(--border);
+  font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);font-family:'Space Mono',monospace;display:flex;align-items:center;justify-content:space-between;}
+.sec-body{padding:11px 12px;display:flex;flex-direction:column;gap:11px;}
+
+/* toggles */
+.trow{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.tl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0;}
+.tl-n{font-size:13px;font-weight:500;} .tl-d{font-size:10px;color:var(--muted);}
+.toggle{position:relative;width:38px;height:20px;cursor:pointer;flex-shrink:0;}
+.toggle input{display:none;}
+.track{width:38px;height:20px;background:var(--border);border-radius:10px;transition:background 0.2s;position:relative;}
+.thumb{position:absolute;top:2px;left:2px;width:16px;height:16px;background:white;border-radius:50%;
+  transition:transform 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.4);}
+input:checked+.track{background:var(--pink);}
+input:checked+.track .thumb{transform:translateX(18px);}
+
+/* inputs */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.inp-g{display:flex;flex-direction:column;gap:4px;}
+.inp-l{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;}
+.inp-r{display:flex;gap:3px;align-items:center;}
+.num-i{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);
+  padding:5px 6px;font-family:'Space Mono',monospace;font-size:11px;outline:none;transition:border-color 0.15s;min-width:0;}
+.num-i:focus{border-color:var(--pink);}
+.txt-i{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);
+  padding:7px 10px;font-family:'Space Mono',monospace;font-size:11px;outline:none;transition:border-color 0.15s;}
+.txt-i:focus{border-color:var(--pink);}
+.txt-i::placeholder{color:var(--muted);}
+.textarea-i{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);
+  padding:7px 10px;font-family:'Outfit',sans-serif;font-size:12px;outline:none;
+  transition:border-color 0.15s;resize:vertical;min-height:60px;line-height:1.5;}
+.textarea-i:focus{border-color:var(--pink);}
+.textarea-i::placeholder{color:var(--muted);}
+.nudge{background:var(--s2);border:1px solid var(--border);border-radius:5px;color:var(--text);
+  width:22px;height:28px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;transition:all 0.15s;flex-shrink:0;}
+.nudge:hover{background:var(--pink);border-color:var(--pink);color:white;}
+
+/* slider */
+.sldr-b{display:flex;flex-direction:column;gap:6px;}
+.sldr-t{display:flex;justify-content:space-between;}
+.sldr-n{font-size:12px;font-weight:500;} .sldr-v{font-size:11px;color:var(--pink);font-family:'Space Mono',monospace;}
+input[type=range]{-webkit-appearance:none;width:100%;height:4px;background:var(--border);border-radius:2px;outline:none;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--pink);border-radius:50%;cursor:pointer;}
+
+/* footer */
+#settings-footer{flex-shrink:0;background:var(--s1);border-top:1px solid var(--border);
+  padding:10px 12px;display:flex;gap:8px;align-items:center;}
+.btn-save{flex:1;padding:8px;background:linear-gradient(135deg,var(--pink-dim),var(--pink));border:none;
+  border-radius:8px;color:white;font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;cursor:pointer;transition:all 0.15s;}
+.btn-save:hover{opacity:0.9;transform:translateY(-1px);}
+.save-ok,.flash-ok{font-size:10px;color:var(--green);font-family:'Space Mono',monospace;opacity:0;transition:opacity 0.3s;white-space:nowrap;}
+.save-ok.show,.flash-ok.show{opacity:1;}
+.hint{font-size:10px;color:var(--muted);line-height:1.6;}
+
+/* buttons */
+.btn-sm{padding:5px 12px;background:var(--s2);border:1px solid var(--border);border-radius:7px;
+  color:var(--text);font-size:11px;font-family:'Space Mono',monospace;cursor:pointer;transition:all 0.15s;}
+.btn-sm:hover{border-color:var(--pink);color:var(--pink);}
+.btn-sm.danger:hover{border-color:var(--red);color:var(--red);}
+.btn-sm.primary{background:linear-gradient(135deg,var(--pink-dim),var(--pink));border-color:var(--pink);color:white;}
+.btn-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+
+/* ══ CHAT PAGE ══ */
+#page-chat{display:flex;flex-direction:column;overflow:hidden;}
+#char-strip{flex-shrink:0;height:220px;background:linear-gradient(180deg,var(--s2) 0%,var(--bg) 100%);
+  border-bottom:1px solid var(--border);display:flex;align-items:stretch;position:relative;overflow:hidden;}
+#char-strip::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 130%,rgba(244,114,182,0.12) 0%,transparent 65%);}
+#char-info{display:flex;flex-direction:column;justify-content:center;gap:9px;
+  padding:16px 0 16px 16px;flex:1;min-width:0;z-index:1;}
+.c-name{font-family:'Klee One',cursive;font-size:17px;font-weight:600;}
+.c-sub{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;}
+#ai-status{display:flex;align-items:center;gap:6px;font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:var(--green);box-shadow:0 0 7px var(--green);}
+.dot.off{background:var(--muted2);box-shadow:none;}
+.dot.thinking{background:var(--yellow);box-shadow:0 0 7px var(--yellow);animation:blink 0.7s ease infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.model-badge{display:inline-block;background:var(--s3);border:1px solid var(--border);border-radius:5px;
+  padding:2px 8px;font-size:9px;font-family:'Space Mono',monospace;color:var(--pink);width:fit-content;}
+#char-canvas-wrap{width:220px;height:220px;flex-shrink:0;display:flex;align-items:flex-end;justify-content:center;position:relative;}
+#char-canvas{display:block;position:absolute;bottom:0;left:50%;transform:translateX(-50%);}
+#char-actions{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:12px 12px 0 0;gap:6px;z-index:1;}
+#clear-chat-btn{background:transparent;border:1px solid var(--border);border-radius:7px;color:var(--muted);
+  width:28px;height:28px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+#clear-chat-btn:hover{border-color:var(--red);color:var(--red);}
+
+#chat-messages{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px;display:flex;flex-direction:column;gap:10px;}
+#chat-messages::-webkit-scrollbar{width:3px;}
+#chat-messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.msg{display:flex;flex-direction:column;gap:3px;max-width:85%;animation:msgIn 0.2s ease;}
+@keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.msg.user{align-self:flex-end;align-items:flex-end;} .msg.ai{align-self:flex-start;align-items:flex-start;}
+.msg-sender{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;padding:0 4px;}
+.msg-bubble{padding:9px 13px;border-radius:14px;font-size:13px;line-height:1.5;word-break:break-word;}
+.msg.user .msg-bubble{background:linear-gradient(135deg,var(--pink-dim),var(--pink));color:white;border-bottom-right-radius:4px;}
+.msg.ai  .msg-bubble{background:var(--s2);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:4px;}
+.msg-time{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;padding:0 4px;}
+.typing-bubble{background:var(--s2);border:1px solid var(--border);border-radius:14px;border-bottom-left-radius:4px;
+  padding:10px 16px;display:flex;gap:4px;align-items:center;}
+.tdot{width:6px;height:6px;background:var(--muted);border-radius:50%;animation:tb 1.2s ease infinite;}
+.tdot:nth-child(2){animation-delay:0.2s;} .tdot:nth-child(3){animation-delay:0.4s;}
+@keyframes tb{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+#chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);pointer-events:none;}
+#chat-empty .ei{font-size:32px;opacity:0.4;} #chat-empty .et{font-size:12px;text-align:center;line-height:1.5;}
+#chat-input-bar{flex-shrink:0;padding:10px 12px;background:var(--s1);border-top:1px solid var(--border);
+  display:flex;gap:8px;align-items:flex-end;}
+#chat-input{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:10px;color:var(--text);
+  padding:9px 12px;font-family:'Outfit',sans-serif;font-size:13px;outline:none;resize:none;
+  min-height:38px;max-height:100px;overflow-y:auto;line-height:1.4;transition:border-color 0.15s;}
+#chat-input:focus{border-color:var(--pink);}
+#chat-input::placeholder{color:var(--muted);}
+#send-btn{width:38px;height:38px;background:linear-gradient(135deg,var(--pink-dim),var(--pink));
+  border:none;border-radius:10px;color:white;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;transition:all 0.15s;box-shadow:0 0 16px rgba(244,114,182,0.2);}
+#send-btn:hover{opacity:0.9;transform:scale(1.05);}
+#send-btn:disabled{opacity:0.4;cursor:not-allowed;transform:none;}
+#mic-btn{width:38px;height:38px;background:var(--s2);border:1px solid var(--border);border-radius:10px;
+  color:var(--muted);cursor:pointer;font-size:16px;display:none;align-items:center;justify-content:center;
+  flex-shrink:0;transition:all 0.15s;}
+#mic-btn:hover{border-color:var(--pink);color:var(--pink);}
+#mic-btn.listening{background:var(--red);border-color:var(--red);color:white;animation:pulse 1s ease infinite;}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,0.4)}50%{box-shadow:0 0 0 8px rgba(248,113,113,0)}}
+
+/* ══ MEMORY PAGE ══ */
+#page-memory .scroll-page{flex:1;}
+.facts-header{display:flex;align-items:center;justify-content:space-between;}
+#facts-count{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace;}
+#facts-list{display:flex;flex-direction:column;gap:5px;max-height:200px;overflow-y:auto;}
+#facts-list::-webkit-scrollbar{width:3px;}
+#facts-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.fact-row{display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--border);
+  border-radius:7px;padding:6px 10px;}
+.fact-text{flex:1;font-size:12px;color:var(--text);line-height:1.4;}
+.fact-del{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:11px;
+  padding:2px 4px;transition:color 0.15s;flex-shrink:0;}
+.fact-del:hover{color:var(--red);}
+.no-facts{font-size:11px;color:var(--muted);text-align:center;padding:16px;font-style:italic;}
+.add-fact-row{display:flex;gap:6px;}
+.add-fact-row input{flex:1;}
+.mem-stat{background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+  display:flex;align-items:center;justify-content:space-between;}
+.mem-stat-label{font-size:11px;color:var(--muted);}
+.mem-stat-value{font-size:13px;font-weight:600;color:var(--pink);font-family:'Space Mono',monospace;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="titlebar">
+    <div class="t-left">
+      <div class="logo">🎀</div>
+      <div><div class="t-name">Desktop Mascot</div><div class="t-sub">ai companion</div></div>
+    </div>
+    <div class="win-btns">
+      <button class="wbtn min" id="btn-min" title="Minimize">−</button>
+      <button class="wbtn max" id="btn-max" title="Maximize">□</button>
+      <button class="wbtn cls" id="btn-close" title="Close (mascot stays!)">✕</button>
+    </div>
+  </div>
+
+  <div id="tabs">
+    <div class="tab active" data-page="settings">⚙️ Settings</div>
+    <div class="tab"        data-page="chat">💬 Chat</div>
+    <div class="tab"        data-page="memory">🧠 Memory</div>
+  </div>
+
+  <div id="pages">
+
+    <!-- ══ SETTINGS ══ -->
+    <div class="page active scroll-page" id="page-settings">
+
+      <div class="section">
+        <div class="sec-title">Mascot</div>
+        <div class="sec-body">
+          <div class="trow"><div class="tl"><span class="tl-n">Show Mascot</span><span class="tl-d">Display the character on screen</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-mascot" checked/><div class="track"><div class="thumb"></div></div></label></div>
+          <div class="trow"><div class="tl"><span class="tl-n">Click Through</span><span class="tl-d">Mouse clicks pass through</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-click" checked/><div class="track"><div class="thumb"></div></div></label></div>
+          <div class="trow"><div class="tl"><span class="tl-n">Show Border</span><span class="tl-d">Debug outline</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-border"/><div class="track"><div class="thumb"></div></div></label></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Window Behaviour</div>
+        <div class="sec-body">
+          <div class="trow"><div class="tl"><span class="tl-n">Always On Top</span><span class="tl-d">Stay above all apps</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-ontop" checked/><div class="track"><div class="thumb"></div></div></label></div>
+          <div class="trow"><div class="tl"><span class="tl-n">Behind Taskbar</span><span class="tl-d">Sit at desktop level</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-taskbar"/><div class="track"><div class="thumb"></div></div></label></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Position</div>
+        <div class="sec-body">
+          <div class="grid2">
+            <div class="inp-g"><div class="inp-l">X</div><div class="inp-r">
+              <button class="nudge" id="x-m">−</button><input class="num-i" type="number" id="pos-x" value="1261"/><button class="nudge" id="x-p">+</button></div></div>
+            <div class="inp-g"><div class="inp-l">Y</div><div class="inp-r">
+              <button class="nudge" id="y-m">−</button><input class="num-i" type="number" id="pos-y" value="264"/><button class="nudge" id="y-p">+</button></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Window Size</div>
+        <div class="sec-body">
+          <div class="grid2">
+            <div class="inp-g"><div class="inp-l">Width</div><div class="inp-r">
+              <button class="nudge" id="w-m">−</button><input class="num-i" type="number" id="win-w" value="200"/><button class="nudge" id="w-p">+</button></div></div>
+            <div class="inp-g"><div class="inp-l">Height</div><div class="inp-r">
+              <button class="nudge" id="h-m">−</button><input class="num-i" type="number" id="win-h" value="220"/><button class="nudge" id="h-p">+</button></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Model Scale</div>
+        <div class="sec-body">
+          <div class="sldr-b">
+            <div class="sldr-t"><span class="sldr-n">Scale</span><span class="sldr-v" id="scale-val">0.25</span></div>
+            <input type="range" id="scale-slider" min="0.05" max="0.80" step="0.01" value="0.25"/>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">AI — Ollama</div>
+        <div class="sec-body">
+          <div class="inp-g"><div class="inp-l">Model Name</div>
+            <input class="txt-i" type="text" id="ollama-model" placeholder="llama3" value="llama3"/></div>
+          <div class="hint">Run <b style="color:var(--text)">ollama serve</b> in a terminal. Models: llama3 · mistral · gemma2 · phi3</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Voice — Piper TTS</div>
+        <div class="sec-body">
+          <div class="trow"><div class="tl"><span class="tl-n">Enable Text-to-Speech</span><span class="tl-d">AI speaks responses via Piper</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-tts"/><div class="track"><div class="thumb"></div></div></label></div>
+          <div class="inp-g"><div class="inp-l">Piper Executable Path</div>
+            <input class="txt-i" type="text" id="piper-path" placeholder="C:\piper\piper.exe"/></div>
+          <div class="inp-g"><div class="inp-l">Voice Model (.onnx)</div>
+            <input class="txt-i" type="text" id="piper-voice" placeholder="C:\piper\voices\en_US-lessac-medium.onnx"/></div>
+          <div class="hint">
+            Download Piper from <b style="color:var(--pink)">github.com/rhasspy/piper</b><br/>
+            Download voices from <b style="color:var(--pink)">huggingface.co/rhasspy/piper-voices</b><br/>
+            Recommended voice: <b style="color:var(--text)">en_US-lessac-medium</b> (natural female)
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Voice — Speech Input (STT)</div>
+        <div class="sec-body">
+          <div class="trow"><div class="tl"><span class="tl-n">Enable Microphone Input</span><span class="tl-d">Speak to your companion (uses browser STT)</span></div>
+            <label class="toggle"><input type="checkbox" id="tog-stt"/><div class="track"><div class="thumb"></div></div></label></div>
+          <div class="hint">Uses the built-in Web Speech API — no install needed. Click the 🎤 button in chat to speak. Note: requires internet for Google's STT service.</div>
+        </div>
+      </div>
+
+      <div style="height:4px;flex-shrink:0;"></div>
+    </div><!-- end settings -->
+
+    <!-- ══ CHAT ══ -->
+    <div class="page" id="page-chat">
+      <div id="char-strip">
+        <div id="char-info">
+          <div class="c-name">AI Companion</div>
+          <div class="c-sub">desktop assistant</div>
+          <div id="ai-status"><div class="dot off" id="sdot"></div><span id="stext">checking...</span></div>
+          <div class="model-badge" id="mbadge">llama3</div>
+        </div>
+        <div id="char-canvas-wrap"><canvas id="char-canvas"></canvas></div>
+        <div id="char-actions"><button id="clear-chat-btn" title="Clear history">🗑</button></div>
+      </div>
+
+      <div id="chat-messages">
+        <div id="chat-empty"><div class="ei">✨</div><div class="et">Say something!<br/>She's listening...</div></div>
+      </div>
+
+      <div id="chat-input-bar">
+        <button id="mic-btn" title="Click to speak">🎤</button>
+        <textarea id="chat-input" rows="1" placeholder="Type a message... (Enter to send)"></textarea>
+        <button id="send-btn">➤</button>
+      </div>
+    </div><!-- end chat -->
+
+    <!-- ══ MEMORY ══ -->
+    <div class="page" id="page-memory">
+      <div class="scroll-page" style="flex:1;">
+
+        <div class="section">
+          <div class="sec-title">About You</div>
+          <div class="sec-body">
+            <div class="inp-g">
+              <div class="inp-l">Your Name</div>
+              <div style="display:flex;gap:6px;">
+                <input class="txt-i" type="text" id="mem-name" placeholder="e.g. Mayura" style="flex:1;"/>
+                <button class="btn-sm primary" id="mem-save-name">Save</button>
+              </div>
+              <span class="flash-ok" id="mem-name-ok">✓ Saved</span>
+            </div>
+            <div class="inp-g">
+              <div class="inp-l">Personality / How she should act</div>
+              <textarea class="textarea-i" id="mem-personality" placeholder="e.g. Be more playful and use kaomoji. Call me senpai."></textarea>
+              <div class="btn-row">
+                <button class="btn-sm primary" id="mem-save-personality">Save</button>
+                <span class="flash-ok" id="mem-pers-ok">✓ Saved</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sec-title">
+            <span>Remembered Facts</span>
+            <span id="facts-count">0 facts</span>
+          </div>
+          <div class="sec-body">
+            <div id="facts-list"></div>
+            <div class="add-fact-row">
+              <input class="txt-i" type="text" id="mem-add-fact" placeholder="Add a fact... e.g. I like anime"/>
+              <button class="btn-sm primary" id="mem-add-fact-btn">+ Add</button>
+            </div>
+            <div class="hint">Facts are automatically remembered from your conversations, or you can add them manually above.</div>
+            <div class="btn-row">
+              <button class="btn-sm danger" id="mem-clear-facts">Clear Facts</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sec-title">Danger Zone</div>
+          <div class="sec-body">
+            <div class="hint">This will erase your name, personality, all facts, and conversation summaries. Cannot be undone.</div>
+            <button class="btn-sm danger" id="mem-clear-all">🗑 Reset All Memory</button>
+          </div>
+        </div>
+
+        <div style="height:4px;flex-shrink:0;"></div>
+      </div>
+    </div><!-- end memory -->
+
+  </div><!-- end pages -->
+
+  <div id="settings-footer">
+    <button class="btn-save" id="btn-save">💾  Save Settings</button>
+    <span class="save-ok" id="save-ok">✓ Saved!</span>
+  </div>
+
+</div>
+<script src="control.js"></script>
+</body>
+</html>
