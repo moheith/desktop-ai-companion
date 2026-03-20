@@ -18,6 +18,8 @@ const store = new Store({
     systemVoice:'',
     elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
     piperPath:'',piperVoice:'',
+    openaiTTSKey:'',openaiTTSModel:'tts-1',openaiTTSVoice:'nova',
+    savedProviders:[],
     chatFontSize:14,theme:'dark',
     chatHistory:[],
   }

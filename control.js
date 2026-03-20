@@ -81,6 +81,9 @@ ipcRenderer.on('chat-history-cleared',()=>{chatHistory=[];clearChatUI();});
 ipcRenderer.on('mood-changed',(_,mood)=>updateMoodUI(mood));
 
 function applyConfig(){
+  // Load saved providers
+  savedProviders=cfg.savedProviders||[];
+  renderSavedProviders();
   // AI
   setProviderTab(cfg.aiProvider||'ollama');
   setEl('ollama-url',cfg.ollamaUrl);
@@ -88,12 +91,17 @@ function applyConfig(){
   setEl('anthropic-key',cfg.anthropicKey);setEl('anthropic-model',cfg.anthropicModel);
   setEl('gemini-key',cfg.geminiKey);setEl('gemini-model',cfg.geminiModel);
   setEl('nvidia-key',cfg.nvidiaKey);setEl('nvidia-model',cfg.nvidiaModel);
-  setEl('custom-url',cfg.customUrl);setEl('custom-key',cfg.customKey);setEl('custom-model',cfg.customModel);
   // Voice
   setVoiceEngine(cfg.voiceEngine||'system');
   ck('tog-tts',cfg.ttsEnabled);ck('tog-stt',cfg.sttEnabled);
   setEl('eleven-key',cfg.elevenKey);setEl('eleven-model',cfg.elevenModel);
   setEl('piper-path',cfg.piperPath);setEl('piper-voice',cfg.piperVoice);
+  setEl('openai-tts-key',cfg.openaiTTSKey||cfg.openaiKey||'');
+  setEl('openai-tts-model',cfg.openaiTTSModel||'tts-1');
+  openAITTSVoice=cfg.openaiTTSVoice||'nova';
+  document.querySelectorAll('[data-oai-voice]').forEach(el=>{
+    el.classList.toggle('selected',el.dataset.oaiVoice===openAITTSVoice);
+  });
   selectedElevenVoiceId=cfg.elevenVoiceId||'';
   // Mascot
   setEl('pos-x',cfg.mascotX);setEl('pos-y',cfg.mascotY);
@@ -106,6 +114,8 @@ function applyConfig(){
   tv('font-size-display',currentFontSize);tv('font-size-val',currentFontSize+'px');
   setEl('font-size-slider',currentFontSize);
   applyChatFont();
+  // Theme
+  if(cfg.theme) applyTheme(cfg.theme);
   // Badge
   tv('mbadge',getModelLabel());
   // Chat history
@@ -360,15 +370,14 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.voiceEngine=currentVoiceEngine;
   cfg.ttsEnabled=document.getElementById('tog-tts').checked;
   cfg.sttEnabled=document.getElementById('tog-stt').checked;
-  cfg.elevenKey=val('eleven-key');
-  cfg.elevenModel=val('eleven-model');
+  cfg.elevenKey=val('eleven-key');cfg.elevenModel=val('eleven-model');
   cfg.elevenVoiceId=selectedElevenVoiceId||cfg.elevenVoiceId;
-  cfg.piperPath=val('piper-path');
-  cfg.piperVoice=val('piper-voice');
+  cfg.piperPath=val('piper-path');cfg.piperVoice=val('piper-voice');
+  cfg.openaiTTSKey=val('openai-tts-key');
+  cfg.openaiTTSModel=val('openai-tts-model');
+  cfg.openaiTTSVoice=openAITTSVoice;
   ipcRenderer.send('save-config',{...cfg});
-  flash('voice-save-ok');
-  setupMic();
-  updateHomeCards();
+  flash('voice-save-ok');setupMic();updateHomeCards();
 };
 
 // ─── TTS ──────────────────────────────────────────────────
@@ -400,7 +409,13 @@ function processTTSQueue(){
   if(!ttsQueue.length){ttsBusy=false;setBadge('');return;}
   ttsBusy=true;
   const s=ttsQueue.shift();setBadge('speaking');
-  const speak=cfg.voiceEngine==='elevenlabs'?speakElevenLabs:cfg.voiceEngine==='piper'?speakPiper:speakSystem;
+  let speak;
+  switch(cfg.voiceEngine){
+    case 'elevenlabs': speak=speakElevenLabs;break;
+    case 'openaitts':  speak=speakOpenAITTS;break;
+    case 'piper':      speak=speakPiper;break;
+    default:           speak=speakSystem;
+  }
   speak(s).then(()=>processTTSQueue());
 }
 function stopTTS(){ttsQueue=[];ttsBusy=false;setBadge('');window.speechSynthesis.cancel();}
@@ -491,13 +506,25 @@ function setupMic(){
     };
     recognition.onend=()=>{
       if(isListening){
-        // Auto-restart if still supposed to be listening
-        try{recognition.start();}catch(e){stopListening();}
+        // Delay prevents Electron Web Speech crash-loop on immediate restart
+        setTimeout(()=>{
+          if(isListening){
+            try{recognition.start();}catch(e){
+              console.warn('[STT restart]',e);
+              stopListening();
+            }
+          }
+        },200);
       }
     };
     recognition.onerror=(e)=>{
-      console.warn('[STT]',e.error);
-      if(e.error!=='no-speech') stopListening();
+      console.warn('[STT error]',e.error);
+      // Only stop for real errors, not no-speech (which is normal)
+      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+        stopListening();
+        btn.title='Mic permission denied';
+      }
+      // no-speech and audio-capture errors: just let onend restart it
     };
     recognition.onresult=(e)=>{
       let interim='',final='';
@@ -555,10 +582,57 @@ document.getElementById('font-inc').onclick=()=>{if(currentFontSize<20){currentF
 document.getElementById('font-size-slider').oninput=e=>{currentFontSize=parseInt(e.target.value);applyChatFont();};
 
 // ─── Looks ────────────────────────────────────────────────
-document.querySelectorAll('.theme-swatch').forEach(s=>s.onclick=()=>{
-  document.querySelectorAll('.theme-swatch').forEach(x=>x.classList.remove('selected'));
-  s.classList.add('selected');cfg.theme=s.dataset.theme;
-});
+// ─── Themes ───────────────────────────────────────────────
+const THEMES={
+  dark:{
+    '--bg':'#07070f','--s1':'#0e0e1c','--s2':'#14142a','--s3':'#1a1a35','--s4':'#202040',
+    '--border':'#252545','--border2':'#1e1e3a',
+    '--pink':'#f472b6','--pink2':'#ec4899','--pink-dim':'#9d174d',
+    '--text':'#f0f0ff','--text2':'#c8c8e8','--muted':'#7878a0','--muted2':'#3a3a60',
+  },
+  midnight:{
+    '--bg':'#00000f','--s1':'#00061e','--s2':'#000d2e','--s3':'#001040','--s4':'#001850',
+    '--border':'#0a1a4a','--border2':'#061230',
+    '--pink':'#60a5fa','--pink2':'#3b82f6','--pink-dim':'#1d4ed8',
+    '--text':'#e8f0ff','--text2':'#b0c8f0','--muted':'#5878a0','--muted2':'#1a2a50',
+  },
+  sakura:{
+    '--bg':'#0f0508','--s1':'#1a080f','--s2':'#220d16','--s3':'#2e1220','--s4':'#3a162a',
+    '--border':'#4a1a32','--border2':'#3a1228',
+    '--pink':'#fb7185','--pink2':'#f43f5e','--pink-dim':'#9f1239',
+    '--text':'#fff0f3','--text2':'#f0c0cc','--muted':'#a06070','--muted2':'#4a2030',
+  },
+  forest:{
+    '--bg':'#020a04','--s1':'#051208','--s2':'#081a0c','--s3':'#0c2410','--s4':'#102e14',
+    '--border':'#143c18','--border2':'#0a2a0e',
+    '--pink':'#4ade80','--pink2':'#22c55e','--pink-dim':'#15803d',
+    '--text':'#f0fff4','--text2':'#c0f0cc','--muted':'#6a9a70','--muted2':'#1a3a20',
+  },
+  sunset:{
+    '--bg':'#0f0503','--s1':'#1a0a05','--s2':'#220f08','--s3':'#2e150c','--s4':'#3a1a10',
+    '--border':'#4a2014','--border2':'#381808',
+    '--pink':'#fb923c','--pink2':'#f97316','--pink-dim':'#c2410c',
+    '--text':'#fff8f0','--text2':'#f0d0b0','--muted':'#a07060','--muted2':'#4a2818',
+  },
+  neon:{
+    '--bg':'#000000','--s1':'#030310','--s2':'#050520','--s3':'#070730','--s4':'#090940',
+    '--border':'#0a0a50','--border2':'#060635',
+    '--pink':'#00ffcc','--pink2':'#00e0b0','--pink-dim':'#007755',
+    '--text':'#f0fffc','--text2':'#a0fff0','--muted':'#508878','--muted2':'#0a2a25',
+  },
+};
+const THEME_NAMES={dark:'🌙 Dark',midnight:'🌊 Midnight Blue',sakura:'🌸 Sakura',forest:'🌿 Forest',sunset:'🌅 Sunset',neon:'⚡ Neon'};
+
+function applyTheme(name){
+  const t=THEMES[name]||THEMES.dark;
+  const root=document.documentElement;
+  Object.entries(t).forEach(([k,v])=>root.style.setProperty(k,v));
+  cfg.theme=name;
+  tv('current-theme-name',THEME_NAMES[name]||name);
+  document.querySelectorAll('.theme-swatch').forEach(s=>s.classList.toggle('selected',s.dataset.theme===name));
+}
+
+document.querySelectorAll('.theme-swatch').forEach(s=>s.onclick=()=>applyTheme(s.dataset.theme));
 document.getElementById('looks-save-btn').onclick=()=>{
   cfg.chatFontSize=currentFontSize;
   ipcRenderer.send('save-config',{...cfg});flash('looks-save-ok');
@@ -752,8 +826,10 @@ async function send(){
     for await(const token of stream){
       fullReply+=token;sentBuf+=token;
       bubble.innerHTML=esc(fullReply);scrollChat();
-      if(cfg.ttsEnabled&&/[.!?]\s*$/.test(sentBuf.trimEnd())){
-        splitSentences(sentBuf).forEach(s=>enqueueTTS(s));sentBuf='';
+      if(cfg.ttsEnabled){
+        const hasPunct=/[.!?。！？]\s*$/.test(sentBuf.trimEnd());
+        const longEnough=sentBuf.length>60&&/[,;:\s]/.test(sentBuf.slice(-1));
+        if(hasPunct||longEnough){const c=sentBuf.trim();if(c.length>2)enqueueTTS(c);sentBuf='';}
       }
     }
     if(cfg.ttsEnabled&&sentBuf.trim()) splitSentences(sentBuf).forEach(s=>enqueueTTS(s));
@@ -767,6 +843,183 @@ async function send(){
     setStatus('offline');
   }finally{isThinking=false;document.getElementById('send-btn').disabled=false;}
 }
+
+// ─── Saved Custom Providers ───────────────────────────────
+let savedProviders=[];   // [{id,name,url,key,model,icon}]
+let editingProviderId=null;
+
+const PROVIDER_DETECT=[
+  {match:'groq.com',      name:'Groq',        icon:'⚡',tag:'tag-green'},
+  {match:'together.xyz',  name:'Together AI',  icon:'🤝',tag:'tag-blue'},
+  {match:'mistral.ai',    name:'Mistral',      icon:'🌬',tag:'tag-purple'},
+  {match:'openrouter.ai', name:'OpenRouter',   icon:'🔀',tag:'tag-yellow'},
+  {match:'cohere.com',    name:'Cohere',       icon:'🌐',tag:'tag-pink'},
+  {match:'fireworks.ai',  name:'Fireworks',    icon:'🎆',tag:'tag-green'},
+  {match:'perplexity.ai', name:'Perplexity',   icon:'🔮',tag:'tag-blue'},
+  {match:'deepinfra.com', name:'DeepInfra',    icon:'🔱',tag:'tag-purple'},
+  {match:'anyscale.com',  name:'Anyscale',     icon:'🌀',tag:'tag-green'},
+];
+
+function detectProviderFromUrl(url){
+  for(const p of PROVIDER_DETECT){if(url.includes(p.match))return p;}
+  return {name:'Custom API',icon:'⚙️',tag:'tag-blue'};
+}
+
+async function fetchModelsFromUrl(url,key){
+  const modelsUrl=url.replace(/\/+$/,'')+'/models';
+  const headers={'Content-Type':'application/json'};
+  if(key)headers['Authorization']='Bearer '+key;
+  const r=await fetch(modelsUrl,{headers,signal:AbortSignal.timeout(5000)});
+  if(!r.ok)throw new Error(`${r.status}`);
+  const data=await r.json();
+  // OpenAI format: {data:[{id}...]} or {models:[{id}...]} or [{id}...]
+  const list=data.data||data.models||data||[];
+  return list.map(m=>typeof m==='string'?m:(m.id||m.name||'')).filter(Boolean).sort();
+}
+
+function renderSavedProviders(){
+  const list=document.getElementById('saved-providers-list');if(!list)return;
+  if(!savedProviders.length){
+    list.innerHTML='<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px;">No saved providers yet. Click Add New to get started.</div>';return;
+  }
+  list.innerHTML='';
+  savedProviders.forEach(p=>{
+    const isActive=cfg.aiProvider==='custom'&&cfg.customUrl===p.url&&cfg.customModel===p.model;
+    const div=document.createElement('div');
+    div.style.cssText='display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:background 0.15s;';
+    div.onmouseenter=()=>div.style.background='var(--s3)';
+    div.onmouseleave=()=>div.style.background='';
+    div.innerHTML=`
+      <span style="font-size:20px;">${p.icon||'⚙️'}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;color:var(--text);">${p.name} ${isActive?'<span class="tag tag-green" style="font-size:9px;">● ACTIVE</span>':''}</div>
+        <div style="font-size:10px;color:var(--muted);">${p.model||'No model'} · ${(p.url||'').replace('https://','')}</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="activateProvider('${p.id}')">Use</button>
+      <button class="btn btn-secondary btn-sm" onclick="editProvider('${p.id}')">Edit</button>
+    `;
+    list.appendChild(div);
+  });
+}
+
+function activateProvider(id){
+  const p=savedProviders.find(x=>x.id===id);if(!p)return;
+  cfg.aiProvider='custom';cfg.customUrl=p.url;cfg.customKey=p.key;cfg.customModel=p.model;
+  setProviderTab('custom');
+  tv('mbadge',p.model||'custom');
+  ipcRenderer.send('save-config',{...cfg});
+  renderSavedProviders();flash('ai-save-ok');updateHomeCards();
+}
+
+function editProvider(id){
+  const p=savedProviders.find(x=>x.id===id);if(!p)return;
+  editingProviderId=id;
+  setEl('pf-name',p.name);setEl('pf-url',p.url);setEl('pf-key',p.key||'');
+  setEl('pf-model-manual',p.model||'');
+  document.getElementById('add-provider-form').style.display='block';
+  document.getElementById('pf-delete-btn').style.display='flex';
+  tv('pf-title','Edit Provider');
+}
+
+function showAddForm(){
+  editingProviderId=null;
+  setEl('pf-name','');setEl('pf-url','');setEl('pf-key','');
+  setEl('pf-model-manual','');
+  const sel=document.getElementById('pf-model-select');
+  if(sel){sel.innerHTML='<option value="">— Fetch models or type below —</option>';}
+  document.getElementById('pf-detected').style.display='none';
+  document.getElementById('pf-delete-btn').style.display='none';
+  tv('pf-title','Add New Provider');
+  document.getElementById('add-provider-form').style.display='block';
+}
+
+document.getElementById('add-provider-btn').onclick=showAddForm;
+document.getElementById('cancel-provider-btn').onclick=()=>{document.getElementById('add-provider-form').style.display='none';};
+
+document.getElementById('pf-detect-btn').onclick=()=>{
+  const url=val('pf-url').trim();if(!url)return;
+  const det=detectProviderFromUrl(url);
+  const info=document.getElementById('pf-detected');
+  info.innerHTML=`✓ Detected: <b>${det.icon} ${det.name}</b>`;
+  info.style.display='block';
+  if(!val('pf-name')) setEl('pf-name',det.name);
+};
+
+document.getElementById('pf-fetch-btn').onclick=async()=>{
+  const url=val('pf-url').trim(),key=val('pf-key').trim();
+  const status=document.getElementById('pf-fetch-status');
+  const sel=document.getElementById('pf-model-select');
+  if(!url){status.textContent='Enter URL first';return;}
+  status.textContent='Fetching…';status.style.color='var(--muted)';
+  try{
+    const models=await fetchModelsFromUrl(url,key);
+    sel.innerHTML='<option value="">— Select a model —</option>';
+    models.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
+    status.textContent=`✓ ${models.length} models found`;status.style.color='var(--green)';
+  }catch(e){
+    status.textContent=`✗ ${e.message} — type model name manually below`;status.style.color='var(--red)';
+  }
+};
+
+document.getElementById('pf-model-select').onchange=function(){
+  if(this.value) setEl('pf-model-manual',this.value);
+};
+
+document.getElementById('pf-save-btn').onclick=()=>{
+  const name=val('pf-name').trim()||'Custom';
+  const url=val('pf-url').trim();
+  const key=val('pf-key').trim();
+  const model=val('pf-model-manual').trim()||val('pf-model-select');
+  if(!url){alert('Enter a URL first');return;}
+  const det=detectProviderFromUrl(url);
+  if(editingProviderId){
+    const p=savedProviders.find(x=>x.id===editingProviderId);
+    if(p)Object.assign(p,{name,url,key,model,icon:det.icon});
+  }else{
+    savedProviders.push({id:Date.now().toString(),name,url,key,model,icon:det.icon});
+  }
+  cfg.savedProviders=savedProviders;
+  ipcRenderer.send('save-config',{...cfg});
+  document.getElementById('add-provider-form').style.display='none';
+  renderSavedProviders();flash('ai-save-ok');
+};
+
+document.getElementById('pf-delete-btn').onclick=()=>{
+  if(!editingProviderId||!confirm('Delete this provider?'))return;
+  savedProviders=savedProviders.filter(p=>p.id!==editingProviderId);
+  cfg.savedProviders=savedProviders;
+  ipcRenderer.send('save-config',{...cfg});
+  document.getElementById('add-provider-form').style.display='none';
+  renderSavedProviders();
+};
+
+// ─── OpenAI TTS ───────────────────────────────────────────
+let openAITTSVoice='nova';
+function selectOpenAIVoice(el){
+  document.querySelectorAll('[data-oai-voice]').forEach(x=>x.classList.remove('selected'));
+  el.classList.add('selected');
+  openAITTSVoice=el.dataset.oaiVoice||'nova';cfg.openaiTTSVoice=openAITTSVoice;
+}
+
+async function speakOpenAITTS(text){
+  const key=cfg.openaiTTSKey||cfg.openaiKey;
+  if(!key)return speakSystem(text);
+  try{
+    const res=await fetch('https://api.openai.com/v1/audio/speech',{
+      method:'POST',
+      headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({model:cfg.openaiTTSModel||'tts-1',voice:cfg.openaiTTSVoice||'nova',input:text,speed:getMoodTTS().rate}),
+    });
+    if(!res.ok)throw new Error('OpenAI TTS '+res.status);
+    const buf=await res.arrayBuffer();
+    const ac=new(window.AudioContext||window.webkitAudioContext)();
+    const decoded=await ac.decodeAudioData(buf);
+    const src=ac.createBufferSource();src.buffer=decoded;src.connect(ac.destination);src.start();
+    return new Promise(resolve=>{src.onended=()=>{ac.close();resolve();};});
+  }catch(e){console.warn('[OpenAI TTS]',e.message);return speakSystem(text);}
+}
+
+document.getElementById('openai-tts-preview')?.addEventListener('click',()=>enqueueTTS('Hello! I\'m your AI companion. How are you today?'));
 
 // ─── Friendly error messages ──────────────────────────────
 function friendlyError(provider, raw){
@@ -867,12 +1120,15 @@ async function* streamNVIDIA(history){
 }
 
 async function* streamCustom(history){
-  const res=await fetch(cfg.customUrl+'/chat/completions',{
-    method:'POST',headers:{'Content-Type':'application/json',...(cfg.customKey?{'Authorization':'Bearer '+cfg.customKey}:{})},
-    body:JSON.stringify({model:cfg.customModel,stream:true,
+  const url=(cfg.customUrl||'').replace(/\/+$/,'');
+  if(!url)throw new Error('No custom provider URL set. Go to AI → Custom and add a provider.');
+  const res=await fetch(url+'/chat/completions',{
+    method:'POST',
+    headers:{'Content-Type':'application/json',...(cfg.customKey?{'Authorization':'Bearer '+cfg.customKey}:{})},
+    body:JSON.stringify({model:cfg.customModel||'',stream:true,
       messages:[{role:'system',content:buildSystemPrompt()},...history.slice(-20)]}),
   });
-  if(!res.ok)throw new Error(`Custom API ${res.status}`);
+  if(!res.ok)throw new Error(`Custom API ${res.status}: ${await res.text()}`);
   yield* streamOpenAIFormat(res);
 }
 

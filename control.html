@@ -437,7 +437,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 /* ════════════════════════════════════════
    LOOKS PAGE
 ════════════════════════════════════════ */
-.theme-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+.theme-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
 .theme-swatch{padding:10px;border-radius:var(--radius2);border:2px solid transparent;cursor:pointer;
   transition:all 0.15s;display:flex;flex-direction:column;gap:6px;}
 .theme-swatch:hover{border-color:var(--muted);}
@@ -736,20 +736,54 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
             </div>
           </div>
 
-          <!-- Custom -->
+          <!-- Custom / Saved Providers -->
           <div class="provider-panel" id="prov-custom">
             <div class="card">
-              <div class="card-header">Custom OpenAI-Compatible Endpoint</div>
+              <div class="card-header">Saved Providers
+                <button class="btn btn-primary btn-sm" id="add-provider-btn">+ Add New</button>
+              </div>
+              <div class="card-body p0">
+                <div id="saved-providers-list" style="padding:8px;">
+                  <div style="padding:16px;text-align:center;color:var(--muted);font-size:12px;">No saved providers yet. Click Add New to get started.<br/><span style="font-size:10px;">Groq, Together AI, Mistral, OpenRouter all work here.</span></div>
+                </div>
+              </div>
+            </div>
+            <!-- Add / Edit form -->
+            <div class="card" id="add-provider-form" style="display:none;">
+              <div class="card-header"><span id="pf-title">Add New Provider</span>
+                <button class="btn btn-secondary btn-sm" id="cancel-provider-btn">✕ Cancel</button>
+              </div>
               <div class="card-body">
-                <div class="field"><label>Base URL</label><input class="inp" id="custom-url" placeholder="https://your-api.com/v1"/></div>
+                <div class="field"><label>Provider Name</label>
+                  <input class="inp" id="pf-name" placeholder="e.g. Groq, Together AI, My API…"/>
+                </div>
+                <div class="field" style="margin-top:8px;"><label>Base URL</label>
+                  <div style="display:flex;gap:6px;">
+                    <input class="inp" id="pf-url" placeholder="https://api.groq.com/openai/v1" style="flex:1;"/>
+                    <button class="btn btn-secondary btn-sm" id="pf-detect-btn">🔍 Detect</button>
+                  </div>
+                  <div id="pf-detected" style="margin-top:6px;font-size:11px;color:var(--green);display:none;"></div>
+                </div>
                 <div class="field" style="margin-top:8px;"><label>API Key (optional)</label>
                   <div class="inp-icon">
-                    <input class="inp" type="password" id="custom-key" placeholder="Leave empty if not required"/>
-                    <span class="ii" onclick="togglePass('custom-key')">👁</span>
+                    <input class="inp" type="password" id="pf-key" placeholder="Leave empty if not required"/>
+                    <span class="ii" onclick="togglePass('pf-key')">👁</span>
                   </div>
                 </div>
-                <div class="field" style="margin-top:8px;"><label>Model Name</label><input class="inp" id="custom-model" placeholder="model-name"/></div>
-                <div class="hint" style="margin-top:8px;">Works with any API that uses the OpenAI chat completions format.</div>
+                <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+                  <button class="btn btn-secondary btn-sm" id="pf-fetch-btn">📋 Fetch Models</button>
+                  <span id="pf-fetch-status" style="font-size:11px;color:var(--muted);"></span>
+                </div>
+                <div class="field" style="margin-top:8px;"><label>Model</label>
+                  <select class="inp" id="pf-model-select" style="margin-bottom:4px;">
+                    <option value="">— Fetch models above or type below —</option>
+                  </select>
+                  <input class="inp" id="pf-model-manual" placeholder="Or type model name manually…"/>
+                </div>
+                <div class="btn-row" style="margin-top:12px;">
+                  <button class="btn btn-primary" id="pf-save-btn">💾 Save Provider</button>
+                  <button class="btn btn-danger btn-sm" id="pf-delete-btn" style="display:none;">🗑 Delete</button>
+                </div>
               </div>
             </div>
           </div>
@@ -781,6 +815,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 <div class="vetab active" data-ve="system">
                   <div class="ve-icon">💻</div><div class="ve-name">System</div><div class="ve-sub">Built-in, offline</div>
                 </div>
+                <div class="vetab" data-ve="openaitts">
+                  <div class="ve-icon">🤖</div><div class="ve-name">OpenAI TTS</div><div class="ve-sub">API, very natural</div>
+                </div>
                 <div class="vetab" data-ve="elevenlabs">
                   <div class="ve-icon">🎭</div><div class="ve-name">ElevenLabs</div><div class="ve-sub">Best quality, API</div>
                 </div>
@@ -795,7 +832,34 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 <div class="voice-grid" id="system-voice-grid">
                   <div style="grid-column:1/-1;padding:16px;text-align:center;color:var(--muted);font-size:11px;">Loading voices…</div>
                 </div>
-                <button class="btn btn-secondary btn-sm" id="voice-preview-btn">▶ Preview</button>
+                <button class="btn btn-secondary btn-sm" id="voice-preview-btn" style="margin-top:8px;">▶ Preview</button>
+              </div>
+
+              <!-- OpenAI TTS -->
+              <div class="voice-panel" id="ve-openaitts">
+                <div class="field" style="margin-bottom:8px;"><label>OpenAI API Key</label>
+                  <div class="inp-icon">
+                    <input class="inp" type="password" id="openai-tts-key" placeholder="sk-… (same as your OpenAI key)"/>
+                    <span class="ii" onclick="togglePass('openai-tts-key')">👁</span>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom:10px;"><label>Model</label>
+                  <select class="inp" id="openai-tts-model">
+                    <option value="tts-1" selected>TTS-1 (fast, low cost)</option>
+                    <option value="tts-1-hd">TTS-1 HD (best quality)</option>
+                  </select>
+                </div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">Select Voice:</div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
+                  <div class="voice-item selected" data-oai-voice="nova" onclick="selectOpenAIVoice(this)"><div class="vi-name">Nova</div><div class="vi-lang">Warm, female ⭐</div></div>
+                  <div class="voice-item" data-oai-voice="shimmer" onclick="selectOpenAIVoice(this)"><div class="vi-name">Shimmer</div><div class="vi-lang">Soft, female</div></div>
+                  <div class="voice-item" data-oai-voice="alloy" onclick="selectOpenAIVoice(this)"><div class="vi-name">Alloy</div><div class="vi-lang">Neutral</div></div>
+                  <div class="voice-item" data-oai-voice="echo" onclick="selectOpenAIVoice(this)"><div class="vi-name">Echo</div><div class="vi-lang">Male</div></div>
+                  <div class="voice-item" data-oai-voice="fable" onclick="selectOpenAIVoice(this)"><div class="vi-name">Fable</div><div class="vi-lang">British male</div></div>
+                  <div class="voice-item" data-oai-voice="onyx" onclick="selectOpenAIVoice(this)"><div class="vi-name">Onyx</div><div class="vi-lang">Deep male</div></div>
+                </div>
+                <button class="btn btn-secondary btn-sm" id="openai-tts-preview">▶ Preview Voice</button>
+                <div class="hint" style="margin-top:8px;">~$0.015 per 1,000 characters (TTS-1). Very natural, no robotic sound. Get key at <a href="#" onclick="shell('https://platform.openai.com/api-keys')">platform.openai.com</a></div>
               </div>
 
               <!-- ElevenLabs -->
@@ -973,22 +1037,31 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
             <div class="card-body">
               <div class="theme-grid">
                 <div class="theme-swatch selected" data-theme="dark">
-                  <div class="ts-preview" style="background:linear-gradient(135deg,#07070f,#1a1a35);"></div>
-                  <div class="ts-name">Dark</div>
+                  <div class="ts-preview" style="background:linear-gradient(135deg,#07070f 0%,#1a1a35 50%,#f472b6 100%);"></div>
+                  <div class="ts-name" style="color:#f472b6;">🌙 Dark</div>
                 </div>
                 <div class="theme-swatch" data-theme="midnight">
-                  <div class="ts-preview" style="background:linear-gradient(135deg,#000010,#001030);"></div>
-                  <div class="ts-name">Midnight</div>
+                  <div class="ts-preview" style="background:linear-gradient(135deg,#000010 0%,#001040 50%,#60a5fa 100%);"></div>
+                  <div class="ts-name" style="color:#60a5fa;">🌊 Midnight Blue</div>
                 </div>
                 <div class="theme-swatch" data-theme="sakura">
-                  <div class="ts-preview" style="background:linear-gradient(135deg,#1a0a10,#2a1020);"></div>
-                  <div class="ts-name">Sakura</div>
+                  <div class="ts-preview" style="background:linear-gradient(135deg,#0f0508 0%,#280d18 50%,#fb7185 100%);"></div>
+                  <div class="ts-name" style="color:#fb7185;">🌸 Sakura</div>
                 </div>
                 <div class="theme-swatch" data-theme="forest">
-                  <div class="ts-preview" style="background:linear-gradient(135deg,#050f07,#0a1f10);"></div>
-                  <div class="ts-name">Forest</div>
+                  <div class="ts-preview" style="background:linear-gradient(135deg,#020a04 0%,#0a2010 50%,#4ade80 100%);"></div>
+                  <div class="ts-name" style="color:#4ade80;">🌿 Forest</div>
+                </div>
+                <div class="theme-swatch" data-theme="sunset">
+                  <div class="ts-preview" style="background:linear-gradient(135deg,#100508 0%,#20100a 50%,#fb923c 100%);"></div>
+                  <div class="ts-name" style="color:#fb923c;">🌅 Sunset</div>
+                </div>
+                <div class="theme-swatch" data-theme="neon">
+                  <div class="ts-preview" style="background:linear-gradient(135deg,#000000 0%,#050520 50%,#00ffcc 100%);"></div>
+                  <div class="ts-name" style="color:#00ffcc;">⚡ Neon</div>
                 </div>
               </div>
+              <div style="margin-top:10px;font-size:11px;color:var(--muted);">Current: <span id="current-theme-name" style="color:var(--pink);">Dark</span></div>
             </div>
           </div>
           <div class="btn-row">
