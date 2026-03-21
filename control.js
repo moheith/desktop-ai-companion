@@ -7,12 +7,15 @@ const { exec } = require('child_process');
 // ─── Splash ───────────────────────────────────────────────
 const splashBar = document.getElementById('splash-bar');
 let splashPct   = 0;
+let splashDone  = false;
 const splashInt = setInterval(() => {
   splashPct = Math.min(splashPct + (splashPct < 70 ? 2.5 : 0.8), 98);
   splashBar.style.width = splashPct + '%';
 }, 40);
 
 function finishSplash() {
+  if(splashDone) return;
+  splashDone = true;
   clearInterval(splashInt);
   splashBar.style.width = '100%';
   setTimeout(() => {
@@ -21,14 +24,18 @@ function finishSplash() {
   }, 300);
 }
 
-// ─── Live2D ───────────────────────────────────────────────
+// Safety fallback — if init-config never fires, show the app anyway after 4s
+setTimeout(finishSplash, 4000);
+
+// ─── Live2D (non-blocking background load) ───────────────
 let chatModel=null, chatPixiApp=null;
-(async function loadLive2D() {
+setTimeout(async function loadLive2D() {
   try {
     new Function(fs.readFileSync(path.join(__dirname,'live2dcubismcore.min.js'),'utf8'))();
     const PIXI=require('pixi.js'); window.PIXI=PIXI;
     const {Live2DModel}=require('pixi-live2d-display/cubism4');
     const W=54,H=62,canvas=document.getElementById('char-canvas');
+    if(!canvas) return;
     canvas.width=W;canvas.height=H;
     chatPixiApp=new PIXI.Application({view:canvas,width:W,height:H,backgroundAlpha:0,antialias:true});
     chatModel=await Live2DModel.from('./model/ai_assistant_model.model3.json');
@@ -36,7 +43,7 @@ let chatModel=null, chatPixiApp=null;
     chatModel.anchor.set(0.5,1.0);chatModel.scale.set(0.042);
     chatModel.x=W/2;chatModel.y=H;
   } catch(e){console.error('[Live2D]',e);}
-})();
+}, 100);
 
 // ─── State ────────────────────────────────────────────────
 let cfg={
@@ -382,43 +389,53 @@ document.getElementById('voice-save-btn').onclick=()=>{
 
 // ─── TTS ──────────────────────────────────────────────────
 const MOOD_TTS={
-  neutral: {rate:1.0, pitch:1.0},  happy:   {rate:1.08,pitch:1.08},
-  excited: {rate:1.2, pitch:1.15}, shy:     {rate:0.95,pitch:1.06},
-  sad:     {rate:0.85,pitch:0.9},  hurt:    {rate:0.88,pitch:0.88},
-  caring:  {rate:0.93,pitch:1.03}, playful: {rate:1.1, pitch:1.1 },
-  annoyed: {rate:1.05,pitch:0.93},
+  neutral:{rate:1.0,pitch:1.0},  happy:  {rate:1.08,pitch:1.08},
+  excited:{rate:1.2,pitch:1.15}, shy:    {rate:0.95,pitch:1.06},
+  sad:    {rate:0.85,pitch:0.9}, hurt:   {rate:0.88,pitch:0.88},
+  caring: {rate:0.93,pitch:1.03},playful:{rate:1.1,pitch:1.1},
+  annoyed:{rate:1.05,pitch:0.93},
 };
-
 function getMoodTTS(){return MOOD_TTS[mem.currentMood||'neutral']||MOOD_TTS.neutral;}
 
 function splitSentences(text){
-  return text.match(/[^.!?]*[.!?]+["']?(?:\s|$)|[^.!?]+$/g)?.map(s=>s.trim()).filter(s=>s.length>2)||[text];
+  return text.match(/[^.!?。！？]*[.!?。！？]+["']?(?:\s|$)|[^.!?。！？]+$/g)
+    ?.map(s=>s.trim()).filter(s=>s.length>2)||[text];
 }
 function cleanForTTS(text){
-  return text.replace(/\*+/g,'').replace(/#+\s*/g,'').replace(/`+/g,'').replace(/\[.*?\]/g,'').replace(/https?:\/\/\S+/g,'link').replace(/\s+/g,' ').trim().substring(0,400);
+  return text.replace(/\*+/g,'').replace(/#+\s*/g,'').replace(/`+/g,'')
+    .replace(/\[.*?\]/g,'').replace(/https?:\/\/\S+/g,'link')
+    .replace(/\s+/g,' ').trim().substring(0,500);
 }
 
-function enqueueTTS(sentence){
+// API engines speak the whole reply at once (no sentence splitting needed)
+// Piper does parallel prefetch pipeline
+function enqueueTTS(text){
   if(!cfg.ttsEnabled)return;
-  const clean=cleanForTTS(sentence);
-  if(!clean||clean.length<3)return;
+  const clean=cleanForTTS(text);if(!clean||clean.length<2)return;
   ttsQueue.push(clean);
   if(!ttsBusy)processTTSQueue();
 }
+
 function processTTSQueue(){
   if(!ttsQueue.length){ttsBusy=false;setBadge('');return;}
-  ttsBusy=true;
-  const s=ttsQueue.shift();setBadge('speaking');
+  ttsBusy=true;setBadge('speaking');
+  const text=ttsQueue.shift();
   let speak;
   switch(cfg.voiceEngine){
-    case 'elevenlabs': speak=speakElevenLabs;break;
-    case 'openaitts':  speak=speakOpenAITTS;break;
-    case 'piper':      speak=speakPiper;break;
-    default:           speak=speakSystem;
+    case 'elevenlabs':speak=speakElevenLabs;break;
+    case 'openaitts': speak=speakOpenAITTS;break;
+    case 'piper':     speak=speakPiper;break;
+    default:          speak=speakSystem;
   }
-  speak(s).then(()=>processTTSQueue());
+  speak(text).then(()=>processTTSQueue()).catch(()=>processTTSQueue());
 }
-function stopTTS(){ttsQueue=[];ttsBusy=false;setBadge('');window.speechSynthesis.cancel();}
+
+let piperCurrentAudio=null;
+function stopTTS(){
+  ttsQueue=[];ttsBusy=false;setBadge('');
+  window.speechSynthesis.cancel();
+  if(piperCurrentAudio){try{piperCurrentAudio.pause();}catch(e){}piperCurrentAudio=null;}
+}
 function setBadge(state){
   const b=document.getElementById('tts-badge');if(!b)return;
   b.className=state==='speaking'?'tts-badge speaking':'tts-badge';
@@ -431,7 +448,7 @@ function speakSystem(text){
     const utt=new SpeechSynthesisUtterance(text);
     const p=getMoodTTS();utt.rate=p.rate;utt.pitch=p.pitch;utt.volume=1;
     if(preferredVoice)utt.voice=preferredVoice;
-    const wd=setTimeout(()=>{window.speechSynthesis.cancel();resolve();},text.length*120+3000);
+    const wd=setTimeout(()=>{window.speechSynthesis.cancel();resolve();},text.length*100+4000);
     utt.onend=utt.onerror=()=>{clearTimeout(wd);resolve();};
     window.speechSynthesis.speak(utt);
   });
@@ -439,111 +456,164 @@ function speakSystem(text){
 
 async function speakElevenLabs(text){
   const key=cfg.elevenKey,vid=cfg.elevenVoiceId||'EXAVITQu4vr4xnSDxMaL',model=cfg.elevenModel||'eleven_turbo_v2_5';
-  if(!key){return speakSystem(text);}
-  const moodSettings={
-    excited:  {stability:0.3,similarity_boost:0.7,style:0.8},
-    happy:    {stability:0.4,similarity_boost:0.75,style:0.6},
-    sad:      {stability:0.75,similarity_boost:0.6,style:0.15},
-    hurt:     {stability:0.8,similarity_boost:0.6,style:0.1},
-    shy:      {stability:0.65,similarity_boost:0.7,style:0.25},
-    caring:   {stability:0.55,similarity_boost:0.75,style:0.4},
-    annoyed:  {stability:0.5,similarity_boost:0.65,style:0.6},
-    playful:  {stability:0.35,similarity_boost:0.7,style:0.7},
-    neutral:  {stability:0.5,similarity_boost:0.75,style:0.4},
+  if(!key)return speakSystem(text);
+  const moodMap={
+    excited:{stability:0.3,similarity_boost:0.7,style:0.8},
+    happy:  {stability:0.4,similarity_boost:0.75,style:0.6},
+    sad:    {stability:0.75,similarity_boost:0.6,style:0.15},
+    hurt:   {stability:0.8,similarity_boost:0.6,style:0.1},
+    shy:    {stability:0.65,similarity_boost:0.7,style:0.25},
+    caring: {stability:0.55,similarity_boost:0.75,style:0.4},
+    annoyed:{stability:0.5,similarity_boost:0.65,style:0.6},
+    playful:{stability:0.35,similarity_boost:0.7,style:0.7},
+    neutral:{stability:0.5,similarity_boost:0.75,style:0.4},
   };
-  const vs=moodSettings[mem.currentMood||'neutral']||moodSettings.neutral;
+  const vs=moodMap[mem.currentMood||'neutral']||moodMap.neutral;
   try{
     const res=await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${vid}/stream`,{
-      method:'POST',
-      headers:{'xi-api-key':key,'Content-Type':'application/json'},
+      method:'POST',headers:{'xi-api-key':key,'Content-Type':'application/json'},
       body:JSON.stringify({text,model_id:model,voice_settings:{...vs,use_speaker_boost:true}}),
     });
-    if(!res.ok)throw new Error('ElevenLabs error');
+    if(!res.ok)throw new Error('ElevenLabs '+res.status);
     const buf=await res.arrayBuffer();
-    const ac=new (window.AudioContext||window.webkitAudioContext)();
+    const ac=new(window.AudioContext||window.webkitAudioContext)();
     const decoded=await ac.decodeAudioData(buf);
     const src=ac.createBufferSource();src.buffer=decoded;src.connect(ac.destination);src.start();
     return new Promise(resolve=>{src.onended=()=>{ac.close();resolve();};});
   }catch(e){console.warn('[ElevenLabs]',e.message);return speakSystem(text);}
 }
 
-function speakPiper(text){
-  return new Promise(resolve=>{
-    if(!cfg.piperPath||!cfg.piperVoice){resolve();return;}
-    const tmp=path.join(os.tmpdir(),`companion_piper_${Date.now()}.wav`);
-    const safe=cleanForTTS(text).replace(/"/g,"'");
-    exec(`echo "${safe}" | "${cfg.piperPath}" --model "${cfg.piperVoice}" --output_file "${tmp}"`,err=>{
-      if(err){resolve();return;}
-      const audio=new Audio(`file://${tmp}`);
-      audio.onended=()=>{try{fs.unlinkSync(tmp);}catch(e){}resolve();};
-      audio.onerror=()=>resolve();
-      audio.play().catch(()=>resolve());
+async function speakOpenAITTS(text){
+  const key=cfg.openaiTTSKey||cfg.openaiKey;
+  if(!key)return speakSystem(text);
+  try{
+    const res=await fetch('https://api.openai.com/v1/audio/speech',{
+      method:'POST',headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({model:cfg.openaiTTSModel||'tts-1',voice:cfg.openaiTTSVoice||'nova',
+        input:text,speed:getMoodTTS().rate}),
     });
-  });
+    if(!res.ok)throw new Error('OpenAI TTS '+res.status);
+    const buf=await res.arrayBuffer();
+    const ac=new(window.AudioContext||window.webkitAudioContext)();
+    const decoded=await ac.decodeAudioData(buf);
+    const src=ac.createBufferSource();src.buffer=decoded;src.connect(ac.destination);src.start();
+    return new Promise(resolve=>{src.onended=()=>{ac.close();resolve();};});
+  }catch(e){console.warn('[OpenAI TTS]',e.message);return speakSystem(text);}
 }
 
+// Piper parallel-prefetch pipeline:
+// Sentence 1 plays immediately. Sentences 2,3,4... are generated in parallel
+// while sentence 1 is playing, so there's no gap between them.
+function piperGenerate(text){
+  return new Promise((resolve,reject)=>{
+    if(!cfg.piperPath||!cfg.piperVoice){reject(new Error('not configured'));return;}
+    const tmp=path.join(os.tmpdir(),`piper_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`);
+    const safe=cleanForTTS(text).replace(/"/g,"'").replace(/\n/g,' ');
+    exec(`echo "${safe}" | "${cfg.piperPath}" --model "${cfg.piperVoice}" --output_file "${tmp}"`,
+      err=>err?reject(err):resolve(tmp));
+  });
+}
+function piperPlayFile(f){
+  return new Promise(resolve=>{
+    const audio=new Audio(`file://${f}`);
+    piperCurrentAudio=audio;
+    audio.onended=()=>{piperCurrentAudio=null;try{fs.unlinkSync(f);}catch(e){}resolve();};
+    audio.onerror=()=>{piperCurrentAudio=null;try{fs.unlinkSync(f);}catch(e){}resolve();};
+    audio.play().catch(()=>resolve());
+  });
+}
+async function speakPiper(fullText){
+  const sentences=splitSentences(cleanForTTS(fullText));
+  if(!sentences.length)return;
+  // Kick off ALL generations in parallel immediately
+  const gens=sentences.map(s=>piperGenerate(s).catch(()=>null));
+  // Play in order — each will already be ready by the time we get to it
+  for(const gen of gens){const f=await gen;if(f)await piperPlayFile(f);}
+}
+
+document.getElementById('openai-tts-preview')?.addEventListener('click',()=>enqueueTTS('Hello! I\'m your AI companion. How are you today?'));
+
 // ─── Mic / STT ────────────────────────────────────────────
+// Strategy: continuous:false is more reliable in Electron.
+// We manually restart after each result, giving a smooth experience.
+let micRestartTimer=null;
+
 function setupMic(){
   const btn=document.getElementById('mic-btn');
   if(!cfg.sttEnabled){btn.classList.remove('active-display');return;}
   btn.classList.add('active-display');
-  if(recognition){try{recognition.stop();}catch(e){}recognition=null;}
-  navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
-    stream.getTracks().forEach(t=>t.stop());
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!SR)return;
-    recognition=new SR();
-    recognition.continuous=true;         // FIX: keep listening
-    recognition.interimResults=true;     // FIX: show live transcript
-    recognition.lang='en-US';
-    recognition.maxAlternatives=1;
+  if(recognition){try{recognition.abort();}catch(e){}recognition=null;}
 
-    recognition.onstart=()=>{
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){btn.title='Speech recognition not available in this browser';return;}
+
+  function buildRecognition(){
+    const r=new SR();
+    r.continuous=false;        // More reliable in Electron than continuous:true
+    r.interimResults=true;
+    r.lang='en-US';
+    r.maxAlternatives=1;
+
+    r.onstart=()=>{
       isListening=true;
       btn.classList.add('listening');
-      btn.title='Listening… click to stop & send';
       showInterim('🎤 Listening…');
     };
-    recognition.onend=()=>{
-      if(isListening){
-        // Delay prevents Electron Web Speech crash-loop on immediate restart
-        setTimeout(()=>{
-          if(isListening){
-            try{recognition.start();}catch(e){
-              console.warn('[STT restart]',e);
-              stopListening();
-            }
-          }
-        },200);
-      }
-    };
-    recognition.onerror=(e)=>{
-      console.warn('[STT error]',e.error);
-      // Only stop for real errors, not no-speech (which is normal)
-      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-        stopListening();
-        btn.title='Mic permission denied';
-      }
-      // no-speech and audio-capture errors: just let onend restart it
-    };
-    recognition.onresult=(e)=>{
+
+    r.onresult=(e)=>{
+      clearTimeout(micRestartTimer);
       let interim='',final='';
       for(let i=e.resultIndex;i<e.results.length;i++){
         const t=e.results[i][0].transcript;
-        if(e.results[i].isFinal) final+=t;
-        else interim+=t;
+        if(e.results[i].isFinal) final+=t; else interim+=t;
       }
-      // Show interim in real-time
-      const inp=document.getElementById('chat-input');
       if(interim) showInterim('🎤 '+interim);
       if(final){
-        inp.value=(inp.value+' '+final).trim();
+        const inp=document.getElementById('chat-input');
+        inp.value=(inp.value?inp.value+' ':'')+final.trim();
         inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,100)+'px';
-        showInterim('');
+        showInterim('🎤 '+final.trim()+' ✓');
       }
     };
-    btn.title='Click to speak';
-  }).catch(err=>{console.error('[Mic]',err);btn.title='Mic permission denied';});
+
+    r.onerror=(e)=>{
+      console.warn('[STT]',e.error);
+      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+        stopListening();btn.title='Mic permission denied — check Windows Settings > Privacy > Microphone';return;
+      }
+      // aborted = we stopped it deliberately, not an error
+      if(e.error==='aborted') return;
+    };
+
+    r.onend=()=>{
+      // If still listening, restart after short gap (natural breath pause feel)
+      if(isListening){
+        micRestartTimer=setTimeout(()=>{
+          if(!isListening) return;
+          try{
+            recognition=buildRecognition();
+            recognition.start();
+          }catch(err){
+            console.warn('[STT restart failed]',err);
+            stopListening();
+          }
+        },180);
+      }
+    };
+    return r;
+  }
+
+  // Ask for mic permission first (required in Electron)
+  navigator.mediaDevices.getUserMedia({audio:true})
+    .then(stream=>{
+      stream.getTracks().forEach(t=>t.stop()); // just needed for permission grant
+      recognition=buildRecognition();
+      btn.title='Click to speak';
+    })
+    .catch(err=>{
+      console.error('[Mic permission]',err);
+      btn.title='Mic denied — allow in Windows Settings > Privacy > Microphone';
+    });
 }
 
 function showInterim(text){
@@ -552,21 +622,26 @@ function showInterim(text){
   el.textContent=text;el.classList.toggle('active',!!text);
 }
 
-function startListening(){if(!recognition||isListening)return;isListening=true;try{recognition.start();}catch(e){console.error('[STT start]',e);}}
+function startListening(){
+  if(isListening)return;
+  if(!recognition){setupMic();setTimeout(startListening,600);return;}
+  isListening=true;
+  try{recognition.start();}catch(e){console.warn('[STT start]',e);isListening=false;}
+}
+
 function stopListening(){
+  clearTimeout(micRestartTimer);
   isListening=false;
-  try{recognition?.stop();}catch(e){}
+  try{recognition?.abort();}catch(e){}
   document.getElementById('mic-btn')?.classList.remove('listening');
-  document.getElementById('mic-btn') && (document.getElementById('mic-btn').title='Click to speak');
   showInterim('');
-  // Auto-send if there's text
   const inp=document.getElementById('chat-input');
   if(inp&&inp.value.trim()) send();
 }
 
 document.getElementById('mic-btn').onclick=()=>{
   if(isListening) stopListening();
-  else{if(!recognition)setupMic();startListening();}
+  else startListening();
 };
 document.getElementById('tog-stt').onchange=e=>{cfg.sttEnabled=e.target.checked;setupMic();};
 
@@ -794,6 +869,9 @@ async function send(){
   const text=inp.value.trim();
   if(!text||isThinking)return;
   inp.value='';inp.style.height='auto';
+  resetIdleTimer();
+  // Remove quick prompts bar once user sends
+  document.getElementById('quick-prompts-bar')?.remove();
   // Update mood from user's message
   ipcRenderer.send('memory-update-mood',text);
   renderMsg('user',text);
@@ -805,7 +883,7 @@ async function send(){
   const wrap=document.getElementById('chat-messages');
   const msgDiv=document.createElement('div');msgDiv.className='msg ai';
   const sender=document.createElement('div');sender.className='msg-sender';sender.textContent='Companion';
-  const bubble=document.createElement('div');bubble.className=`msg-bubble streaming`;bubble.style.fontSize=currentFontSize+'px';
+  const bubble=document.createElement('div');bubble.className='msg-bubble streaming';bubble.style.fontSize=currentFontSize+'px';
   const timeEl=document.createElement('div');timeEl.className='msg-time';
   const now=new Date();timeEl.textContent=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   msgDiv.appendChild(sender);msgDiv.appendChild(bubble);msgDiv.appendChild(timeEl);
@@ -826,17 +904,24 @@ async function send(){
     for await(const token of stream){
       fullReply+=token;sentBuf+=token;
       bubble.innerHTML=esc(fullReply);scrollChat();
-      if(cfg.ttsEnabled){
-        const hasPunct=/[.!?。！？]\s*$/.test(sentBuf.trimEnd());
-        const longEnough=sentBuf.length>60&&/[,;:\s]/.test(sentBuf.slice(-1));
-        if(hasPunct||longEnough){const c=sentBuf.trim();if(c.length>2)enqueueTTS(c);sentBuf='';}
+      if(cfg.ttsEnabled&&cfg.voiceEngine==='piper'){
+        if(/[.!?。！？]\s*$/.test(sentBuf.trimEnd())){
+          const c=sentBuf.trim();if(c.length>2)enqueueTTS(c);sentBuf='';
+        }
       }
     }
-    if(cfg.ttsEnabled&&sentBuf.trim()) splitSentences(sentBuf).forEach(s=>enqueueTTS(s));
+    if(cfg.ttsEnabled){
+      if(cfg.voiceEngine==='piper'){if(sentBuf.trim())enqueueTTS(sentBuf.trim());}
+      else enqueueTTS(fullReply);
+    }
     bubble.classList.remove('streaming');
+    // Add reaction buttons to completed bubble
+    addReactions(msgDiv);
     chatHistory.push({role:'assistant',content:fullReply});
     ipcRenderer.send('save-chat-history',chatHistory);
     autoLearn(fullReply);setStatus('ready');
+    // Auto-summarize every 25 messages
+    maybeAutoSummarize();
   }catch(err){
     bubble.classList.remove('streaming');
     bubble.innerHTML=esc(friendlyError(cfg.aiProvider,err.message));
@@ -1149,3 +1234,187 @@ document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key===
 document.getElementById('chat-input').addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px';});
 document.getElementById('clear-chat-btn').onclick=()=>{if(confirm('Clear chat history?'))ipcRenderer.send('clear-chat-history');};
 document.getElementById('tog-tts').onchange=e=>{cfg.ttsEnabled=e.target.checked;};
+
+// ─── Auto-summarize after 25 messages ────────────────────
+async function maybeAutoSummarize(){
+  if(chatHistory.length>0&&chatHistory.length%25===0){
+    const last=chatHistory.slice(-25);
+    const summaryPrompt=`Summarize this conversation in 1-2 sentences, focusing on key facts learned about the user and important topics discussed. Be brief and factual.\n\n${last.map(m=>`${m.role}: ${m.content.substring(0,200)}`).join('\n')}`;
+    try{
+      let summary='';
+      const fakeHistory=[{role:'user',content:summaryPrompt}];
+      let stream;
+      switch(cfg.aiProvider){
+        case 'openai':    stream=streamOpenAI(fakeHistory);break;
+        case 'anthropic': stream=streamAnthropic(fakeHistory);break;
+        case 'gemini':    stream=streamGemini(fakeHistory);break;
+        default:          stream=streamOllama(fakeHistory);
+      }
+      for await(const t of stream) summary+=t;
+      if(summary.length>10){
+        mem.convoSummaries=mem.convoSummaries||[];
+        mem.convoSummaries.push({summary:summary.trim(),date:new Date().toLocaleDateString()});
+        if(mem.convoSummaries.length>10)mem.convoSummaries.shift();
+        ipcRenderer.send('memory-add-summary',summary.trim());
+        showToast('📝 Conversation summarized into memory');
+      }
+    }catch(e){console.warn('[Auto-summarize]',e);}
+  }
+}
+
+// ─── Idle messages ────────────────────────────────────────
+const IDLE_MESSAGES=[
+  "Hey, you've been quiet... everything okay? 🥺",
+  "I'm still here if you want to chat! ✨",
+  "Hmm, it's been a while... I've been thinking about you (=^･ω･^=)",
+  "Psst... I'm bored. Talk to me! 😄",
+  "Still here~ just waiting patiently 💕",
+  "You know you can always talk to me, right? 🌸",
+];
+let idleTimer=null;
+function resetIdleTimer(){
+  clearTimeout(idleTimer);
+  idleTimer=setTimeout(()=>{
+    if(!isThinking&&currentPage==='chat'){
+      const msg=IDLE_MESSAGES[Math.floor(Math.random()*IDLE_MESSAGES.length)];
+      renderAIMessage(msg);
+      if(cfg.ttsEnabled)enqueueTTS(msg);
+    }
+  },5*60*1000); // 5 minutes
+}
+
+function renderAIMessage(text){
+  const wrap=document.getElementById('chat-messages');
+  document.getElementById('chat-empty').style.display='none';
+  const div=document.createElement('div');div.className='msg ai';
+  const now=new Date();
+  const time=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  div.innerHTML=`<div class="msg-sender">Companion</div>
+    <div class="msg-bubble" style="font-size:${currentFontSize}px">${esc(text)}</div>
+    <div class="msg-time">${time}</div>`;
+  addReactions(div);
+  wrap.appendChild(div);scrollChat();
+}
+
+
+// ─── Quick prompts ────────────────────────────────────────
+const QUICK_PROMPTS=[
+  {label:'😊 How are you?',  text:'How are you feeling today?'},
+  {label:'🎮 Game rec',      text:'Can you recommend a fun game for me?'},
+  {label:'💡 Fun fact',      text:'Tell me a fun and interesting fact!'},
+  {label:'😂 Tell a joke',   text:'Tell me a funny joke!'},
+  {label:'🌸 Compliment me', text:'Say something sweet to cheer me up!'},
+  {label:'🤔 What to do',    text:'I\'m bored. What should I do right now?'},
+];
+
+function renderQuickPrompts(){
+  const existing=document.getElementById('quick-prompts-bar');
+  if(existing)existing.remove();
+  if(chatHistory.length>0)return; // only show when chat is empty
+  const bar=document.createElement('div');
+  bar.id='quick-prompts-bar';
+  bar.style.cssText='display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--border2);background:var(--s1);';
+  QUICK_PROMPTS.forEach(p=>{
+    const btn=document.createElement('button');
+    btn.textContent=p.label;
+    btn.style.cssText='padding:5px 10px;background:var(--s2);border:1px solid var(--border);border-radius:20px;color:var(--text2);font-size:11px;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
+    btn.onmouseenter=()=>{btn.style.borderColor='var(--pink)';btn.style.color='var(--pink)';};
+    btn.onmouseleave=()=>{btn.style.borderColor='var(--border)';btn.style.color='var(--text2)';};
+    btn.onclick=()=>{
+      document.getElementById('chat-input').value=p.text;
+      bar.remove();send();
+    };
+    bar.appendChild(btn);
+  });
+  const inputBar=document.getElementById('chat-input-bar');
+  inputBar.parentNode.insertBefore(bar,inputBar);
+}
+
+// ─── Toast notifications ──────────────────────────────────
+function showToast(message,duration=3000){
+  const existing=document.getElementById('toast-notif');if(existing)existing.remove();
+  const toast=document.createElement('div');toast.id='toast-notif';
+  toast.style.cssText=`position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(10px);
+    background:var(--s3);border:1px solid var(--border);border-radius:20px;
+    padding:8px 16px;font-size:12px;color:var(--text2);z-index:9999;
+    opacity:0;transition:all 0.3s;pointer-events:none;white-space:nowrap;`;
+  toast.textContent=message;
+  document.body.appendChild(toast);
+  setTimeout(()=>{toast.style.opacity='1';toast.style.transform='translateX(-50%) translateY(0)';},50);
+  setTimeout(()=>{toast.style.opacity='0';setTimeout(()=>toast.remove(),300);},duration);
+}
+
+// ─── Chat export ──────────────────────────────────────────
+function exportChat(){
+  if(!chatHistory.length){showToast('No messages to export');return;}
+  const lines=chatHistory.map(m=>{
+    const role=m.role==='user'?(mem.userName||'You'):'Companion';
+    return `[${role}]\n${m.content}\n`;
+  });
+  const text=`Desktop Mascot Chat Export\n${new Date().toLocaleString()}\n${'─'.repeat(40)}\n\n${lines.join('\n')}`;
+  const blob=new Blob([text],{type:'text/plain'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;
+  a.download=`chat_export_${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();URL.revokeObjectURL(url);
+  showToast('💾 Chat exported!');
+}
+
+// Add export button to chat header
+const exportBtn=document.createElement('button');
+exportBtn.className='chat-act-btn';exportBtn.title='Export chat';exportBtn.textContent='💾';
+exportBtn.onclick=exportChat;
+document.querySelector('.chat-actions')?.insertBefore(exportBtn,document.getElementById('clear-chat-btn'));
+
+// ─── Keyboard shortcuts ───────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey&&e.key==='1'){e.preventDefault();switchPage('chat');}
+  if(e.ctrlKey&&e.key==='2'){e.preventDefault();switchPage('ai');}
+  if(e.ctrlKey&&e.key==='3'){e.preventDefault();switchPage('voice');}
+  if(e.ctrlKey&&e.key==='4'){e.preventDefault();switchPage('memory');}
+  if(e.ctrlKey&&e.shiftKey&&e.key==='S'){e.preventDefault();stopTTS();showToast('🔇 Voice stopped');}
+});
+
+// ─── Daily greeting ───────────────────────────────────────
+function checkDailyGreeting(){
+  const today=new Date().toDateString();
+  const last=localStorage.getItem('lastGreeting');
+  if(last===today||chatHistory.length>0)return;
+  localStorage.setItem('lastGreeting',today);
+  const hour=new Date().getHours();
+  const greet=hour<12?'Good morning':(hour<17?'Good afternoon':'Good evening');
+  const name=mem.userName?`, ${mem.userName}`:'';
+  setTimeout(()=>{
+    const msg=`${greet}${name}! 🌟 I'm so happy to see you today. How are you doing?`;
+    renderMsg('ai',msg);
+    chatHistory.push({role:'assistant',content:msg});
+    ipcRenderer.send('save-chat-history',chatHistory);
+    if(cfg.ttsEnabled)enqueueTTS(msg);
+    document.getElementById('chat-empty').style.display='none';
+  },1500);
+}
+
+// Hook into send() to add auto-summarize and idle reset
+// (now inlined directly into send() above — nothing needed here)
+
+// ─── Reaction helper ──────────────────────────────────────
+function addReactions(msgDiv){
+  const reactions=document.createElement('div');
+  reactions.style.cssText='display:flex;gap:4px;padding:2px 4px;';
+  ['❤️','😂','😮','😢','👏'].forEach(emoji=>{
+    const btn=document.createElement('button');btn.textContent=emoji;
+    btn.style.cssText='background:transparent;border:1px solid var(--border);border-radius:20px;padding:2px 6px;cursor:pointer;font-size:12px;transition:all 0.15s;';
+    btn.onmouseenter=()=>btn.style.background='var(--s3)';
+    btn.onmouseleave=()=>btn.style.background='transparent';
+    btn.onclick=()=>{btn.style.background='var(--pink-dim)';btn.style.borderColor='var(--pink)';btn.style.transform='scale(1.3)';setTimeout(()=>btn.style.transform='scale(1)',200);};
+    reactions.appendChild(btn);
+  });
+  msgDiv.appendChild(reactions);
+}
+
+// ─── Init extras ──────────────────────────────────────────
+setTimeout(()=>{
+  renderQuickPrompts();
+  checkDailyGreeting();
+  resetIdleTimer();
+},800);
