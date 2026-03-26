@@ -1,3 +1,4 @@
 node_modules
 dist
-mic/
+mic/**/models/
+mic/**/*.bin
