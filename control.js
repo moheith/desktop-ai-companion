@@ -54,7 +54,7 @@ let cfg={
   nvidiaKey:'',nvidiaModel:'nvidia/llama-3.1-nemotron-70b-instruct',
   customUrl:'',customKey:'',customModel:'',
   voiceEngine:'system',ttsEnabled:false,sttEnabled:false,systemVoice:'',
-  sttEngine:'openai',sttLanguage:'auto',
+  sttEngine:'openai',sttLanguage:'auto',autoMicStop:true,autoMicSend:true,
   elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
   piperPath:'',piperVoice:'',
   whisperCppPath:'',whisperCppModel:'',
@@ -105,6 +105,8 @@ function applyConfig(){
   ck('tog-tts',cfg.ttsEnabled);ck('tog-stt',cfg.sttEnabled);
   setEl('stt-engine',cfg.sttEngine||'openai');
   setEl('stt-language',cfg.sttLanguage||'auto');
+  ck('tog-stt-auto-stop',cfg.autoMicStop!==false);
+  ck('tog-stt-auto-send',cfg.autoMicSend!==false);
   setEl('eleven-key',cfg.elevenKey);setEl('eleven-model',cfg.elevenModel);
   setEl('piper-path',cfg.piperPath);setEl('piper-voice',cfg.piperVoice);
   setEl('whispercpp-path',cfg.whisperCppPath||'');
@@ -387,6 +389,8 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.sttEnabled=document.getElementById('tog-stt').checked;
   cfg.sttEngine=val('stt-engine')||'openai';
   cfg.sttLanguage=val('stt-language')||'auto';
+  cfg.autoMicStop=document.getElementById('tog-stt-auto-stop')?.checked!==false;
+  cfg.autoMicSend=document.getElementById('tog-stt-auto-send')?.checked!==false;
   cfg.elevenKey=val('eleven-key');cfg.elevenModel=val('eleven-model');
   cfg.elevenVoiceId=selectedElevenVoiceId||cfg.elevenVoiceId;
   cfg.piperPath=val('piper-path');cfg.piperVoice=val('piper-voice');
@@ -551,6 +555,8 @@ let audioSource     = null;
 let audioProcessor  = null;
 let audioSilencer   = null;
 let pcmChunks       = [];
+let silenceMs       = 0;
+let heardSpeech     = false;
 
 function getWhisperKey(){
   return cfg.openaiTTSKey || cfg.openaiKey || '';
@@ -780,6 +786,8 @@ function cleanupRecording(){
   audioSource=null;
   audioProcessor=null;
   audioSilencer=null;
+  silenceMs=0;
+  heardSpeech=false;
 }
 
 function mergeFloat32Chunks(chunks){
@@ -830,6 +838,10 @@ function applyTranscribedText(text){
   inp.style.height=Math.min(inp.scrollHeight,100)+'px';
   const preview=clean.length>60?clean.slice(0,60)+'...':clean;
   showInterim(`OK: "${preview}"`);
+  if(cfg.autoMicSend!==false && !isThinking){
+    setTimeout(()=>send(),120);
+    return;
+  }
   setTimeout(()=>showInterim(''),2500);
 }
 
@@ -945,10 +957,26 @@ async function startListening(){
     audioSilencer.gain.value=0;
     pcmChunks=[];
     recordingSeconds=0;
+    silenceMs=0;
+    heardSpeech=false;
     isListening=true;
     audioProcessor.onaudioprocess=e=>{
       if(!isListening) return;
-      pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      const input=e.inputBuffer.getChannelData(0);
+      pcmChunks.push(new Float32Array(input));
+      let sum=0;
+      for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
+      const rms=Math.sqrt(sum/input.length);
+      const chunkMs=(input.length/(audioContext?.sampleRate||16000))*1000;
+      if(rms>0.014){
+        heardSpeech=true;
+        silenceMs=0;
+      }else if(heardSpeech){
+        silenceMs+=chunkMs;
+        if(cfg.autoMicStop!==false && silenceMs>=1600){
+          stopListening(true);
+        }
+      }
     };
     audioSource.connect(audioProcessor);
     audioProcessor.connect(audioSilencer);

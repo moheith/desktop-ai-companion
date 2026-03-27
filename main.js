@@ -15,7 +15,7 @@ const store = new Store({
     nvidiaKey:'',nvidiaModel:'nvidia/llama-3.1-nemotron-70b-instruct',
     customUrl:'',customKey:'',customModel:'',
     voiceEngine:'system',ttsEnabled:false,sttEnabled:false,
-    sttEngine:'openai',sttLanguage:'auto',
+    sttEngine:'openai',sttLanguage:'auto',autoMicStop:true,autoMicSend:true,
     systemVoice:'',
     elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
     piperPath:'',piperVoice:'',
