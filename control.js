@@ -74,6 +74,8 @@ let currentPage='home',currentProviderTab='ollama',currentVoiceEngine='system';
 let availableMics=[],pendingTranscript='';
 let liveRecognition=null,wakeRecognition=null,wakeListening=false;
 let latestTranscriptConfidence=null,lastVoiceCommand='';
+let wakeCommandProcess=null,wakeCommandPoll=null,wakeCommandFile='',wakeCommandLastText='';
+let micInputSnapshot='',liveInterimText='';
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -391,10 +393,26 @@ function getLiveRecognitionLang(){
   return 'en-IN';
 }
 
+function getWhisperCommandLang(){
+  if(cfg.sttBilingualBias==='hi-en') return 'auto';
+  if(cfg.sttLanguage==='hi') return 'hi';
+  if(cfg.sttLanguage==='en') return 'en';
+  return 'auto';
+}
+
 function updateConfidenceUI(conf){
   latestTranscriptConfidence=Number.isFinite(conf)?conf:null;
   const label=document.getElementById('stt-confidence-text');
   if(label) label.textContent=latestTranscriptConfidence!=null?`${Math.round(latestTranscriptConfidence*100)}%`: 'n/a';
+}
+
+function applyLiveTranscriptToInput(text){
+  const inp=document.getElementById('chat-input');
+  if(!inp) return;
+  const prefix=micInputSnapshot?`${micInputSnapshot} `:'';
+  inp.value=(prefix+text).trim();
+  inp.style.height='auto';
+  inp.style.height=Math.min(inp.scrollHeight,100)+'px';
 }
 
 function startLiveRecognition(){
@@ -416,7 +434,11 @@ function startLiveRecognition(){
       interim+=alt.transcript||'';
     }
     updateConfidenceUI(bestConfidence);
-    if(interim.trim()) showInterim(`Live: ${interim.trim()}`);
+    if(interim.trim()){
+      liveInterimText=interim.trim();
+      applyLiveTranscriptToInput(liveInterimText);
+      showInterim(`Live: ${liveInterimText}`);
+    }
   };
   liveRecognition.onerror=()=>{};
   liveRecognition.onend=()=>{liveRecognition=null;};
@@ -426,6 +448,7 @@ function startLiveRecognition(){
 function stopLiveRecognition(){
   try{liveRecognition?.stop?.();}catch{}
   liveRecognition=null;
+  liveInterimText='';
 }
 
 function normalizeVoiceText(text){
@@ -440,6 +463,15 @@ function extractWakePayload(text){
   if(idx===-1) return '';
   const after=normalized.slice(idx+wake.length).trim();
   return after || '__wake__';
+}
+
+function stripWakePhrase(text){
+  const raw=(text||'').trim();
+  if(!cfg.wakeWordEnabled) return raw;
+  const wake=(cfg.wakeWordPhrase||'').trim();
+  if(!wake) return raw;
+  const escaped=wake.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return raw.replace(new RegExp(`^\\s*${escaped}[\\s,.:;-]*`,'i'),'').trim();
 }
 
 function executeVoiceCommand(rawText){
@@ -469,7 +501,7 @@ function handleVoiceTranscript(text,meta={}){
   const trimmed=(text||'').trim();
   if(!trimmed) return true;
   let payload=trimmed;
-  if(cfg.wakeWordEnabled){
+  if(cfg.wakeWordEnabled && !meta.skipWake){
     payload=extractWakePayload(trimmed);
     if(!payload) return true;
     if(payload==='__wake__'){
@@ -478,19 +510,18 @@ function handleVoiceTranscript(text,meta={}){
       return true;
     }
   }
-  if(cfg.sttMode==='command'){
-    if(executeVoiceCommand(payload)){
-      showInterim(`Command: ${payload}`);
-      setTimeout(()=>showInterim(''),1800);
-      hideTranscriptPreview(true);
-      if(meta.applyToInput){
-        const inp=document.getElementById('chat-input');
-        if(inp) inp.value='';
-      }
-      return true;
+  const commandHandled=executeVoiceCommand(payload);
+  if(commandHandled){
+    showInterim(`Command: ${payload}`);
+    setTimeout(()=>showInterim(''),1800);
+    hideTranscriptPreview(true);
+    if(meta.applyToInput){
+      const inp=document.getElementById('chat-input');
+      if(inp) inp.value='';
     }
+    return true;
   }
-  if(cfg.sttMode==='command' && !executeVoiceCommand(payload)){
+  if(cfg.sttMode==='command'){
     showInterim('No matching voice command');
     setTimeout(()=>showInterim(''),1800);
     if(meta.applyToInput){
@@ -502,39 +533,72 @@ function handleVoiceTranscript(text,meta={}){
   return false;
 }
 
-async function setupWakeWordListener(){
+function stopWakeWordListener(){
+  wakeListening=false;
   try{wakeRecognition?.stop?.();}catch{}
   wakeRecognition=null;
-  wakeListening=false;
-  if(!cfg.sttEnabled || !cfg.wakeWordEnabled || isListening) return;
-  const Ctor=getSpeechRecognitionCtor();
-  if(!Ctor) return;
-  wakeRecognition=new Ctor();
-  wakeRecognition.continuous=true;
-  wakeRecognition.interimResults=true;
-  wakeRecognition.lang=getLiveRecognitionLang();
-  wakeRecognition.onresult=e=>{
-    let heard='';
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      heard+=e.results[i][0]?.transcript||'';
-    }
-    const payload=extractWakePayload(heard);
-    if(payload){
-      try{wakeRecognition?.stop?.();}catch{}
-      wakeRecognition=null;
-      wakeListening=false;
-      startListening();
-    }
-  };
-  wakeRecognition.onend=()=>{
-    wakeListening=false;
-    if(cfg.wakeWordEnabled && !isListening) setTimeout(()=>setupWakeWordListener(),800);
-  };
-  wakeRecognition.onerror=()=>{};
+  if(wakeCommandPoll){ clearInterval(wakeCommandPoll); wakeCommandPoll=null; }
+  if(wakeCommandProcess && !wakeCommandProcess.killed){
+    try{wakeCommandProcess.kill();}catch{}
+  }
+  wakeCommandProcess=null;
+  wakeCommandFile='';
+  wakeCommandLastText='';
+}
+
+function pollWakeCommandFile(){
+  if(!wakeCommandFile || !fs.existsSync(wakeCommandFile)) return;
   try{
-    wakeRecognition.start();
-    wakeListening=true;
+    const text=fs.readFileSync(wakeCommandFile,'utf8').trim();
+    if(!text || text===wakeCommandLastText) return;
+    wakeCommandLastText=text;
+    const cleaned=stripWakePhrase(text);
+    updateConfidenceUI(null);
+    if(!cleaned){
+      playWakeCue();
+      showInterim('Wake word detected. Listening...');
+      stopWakeWordListener();
+      setTimeout(()=>startListening(),120);
+      return;
+    }
+    playWakeCue();
+    showInterim(`Heard: ${cleaned}`);
+    const consumed=handleVoiceTranscript(cleaned,{skipWake:true,applyToInput:true});
+    if(cfg.sttMode==='chat' && !consumed){
+      const inp=document.getElementById('chat-input');
+      if(inp){
+        inp.value=cleaned;
+        inp.style.height='auto';
+        inp.style.height=Math.min(inp.scrollHeight,100)+'px';
+      }
+      hideTranscriptPreview(true);
+      setTimeout(()=>send(),120);
+    }
   }catch{}
+}
+
+async function setupWakeWordListener(){
+  stopWakeWordListener();
+  if(!cfg.sttEnabled || !cfg.wakeWordEnabled || isListening) return;
+  const commandExe=getEffectiveWhisperCommandPath();
+  const { model }=getEffectiveWhisperPaths();
+  if(!commandExe || !model || !fs.existsSync(commandExe) || !fs.existsSync(model)) return;
+  const tempDir=path.join(os.tmpdir(),'desktop-mascot-wake');
+  fs.mkdirSync(tempDir,{recursive:true});
+  wakeCommandFile=path.join(tempDir,'wake-command.txt');
+  wakeCommandLastText='';
+  try{fs.writeFileSync(wakeCommandFile,'');}catch{}
+  const args=['-m',model,'-p',cfg.wakeWordPhrase||'hey mascot','-f',wakeCommandFile,'-l',getWhisperCommandLang(),'-pms','2500','-cms','7000'];
+  wakeCommandProcess=execFile(commandExe,args,{windowsHide:true});
+  wakeCommandProcess.stderr?.on('data',data=>{
+    const text=String(data||'');
+    if(/always-prompt mode/i.test(text)) wakeListening=true;
+  });
+  wakeCommandProcess.on('exit',()=>{
+    wakeListening=false;
+    if(cfg.wakeWordEnabled && !isListening) setTimeout(()=>setupWakeWordListener(),1200);
+  });
+  wakeCommandPoll=setInterval(pollWakeCommandFile,700);
 }
 
 // ─── Voice engine tabs ────────────────────────────────────
@@ -846,6 +910,12 @@ function getEffectiveWhisperPaths(){
   return { exe:configuredExe, model:configuredModel, source:'missing' };
 }
 
+function getEffectiveWhisperCommandPath(){
+  const { exe }=getEffectiveWhisperPaths();
+  if(!exe) return '';
+  return exe.replace(/whisper-cli\.exe$/i,'whisper-command.exe');
+}
+
 function showInterim(text){
   const el=document.getElementById('mic-interim');
   if(!el)return;
@@ -856,6 +926,25 @@ function showInterim(text){
 function setListeningVisuals(active){
   document.getElementById('mic-btn')?.classList.toggle('listening',!!active);
   document.getElementById('chat-canvas-wrap')?.classList.toggle('listening',!!active);
+}
+
+function playWakeCue(){
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    const ac=new AC();
+    const osc=ac.createOscillator();
+    const gain=ac.createGain();
+    osc.type='sine';
+    osc.frequency.value=880;
+    gain.gain.setValueAtTime(0.001,ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08,ac.currentTime+0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.18);
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    osc.start();
+    osc.stop(ac.currentTime+0.2);
+    osc.onended=()=>ac.close();
+  }catch{}
 }
 
 function setTranscribingUI(active,text='Transcribing...'){
@@ -1077,6 +1166,9 @@ function updateSTTUI(){
       ? (resolved.source==='bundled'?'Bundled whisper.cpp is ready for this app build':'Custom local whisper.cpp path is configured')
       : 'Add whisper.cpp executable and model path below';
     txt.style.color=ready?'var(--green)':'var(--yellow)';
+    if(ready && cfg.wakeWordEnabled && !isListening){
+      txt.textContent=`Wake listener armed: say "${cfg.wakeWordPhrase||'hey mascot'}"`;
+    }
     return;
   }
   if(getWhisperKey()){
@@ -1163,14 +1255,15 @@ function applyTranscribedText(text){
   if(!clean){
     setTranscribingUI(false);
     showInterim('Nothing detected - try again');
+    micInputSnapshot='';
     setTimeout(()=>showInterim(''),2500);
     return;
   }
   setTranscribingUI(false);
-  const consumed=handleVoiceTranscript(clean,{applyToInput:true});
+  const consumed=handleVoiceTranscript(clean,{applyToInput:true,skipWake:true});
   if(consumed) return;
   const inp=document.getElementById('chat-input');
-  inp.value=(inp.value?inp.value+' ':'')+clean;
+  inp.value=(micInputSnapshot?`${micInputSnapshot} `:'')+clean;
   inp.style.height='auto';
   inp.style.height=Math.min(inp.scrollHeight,100)+'px';
   const preview=clean.length>60?clean.slice(0,60)+'...':clean;
@@ -1182,6 +1275,7 @@ function applyTranscribedText(text){
   }
   showTranscriptPreview(clean);
   inp.focus();
+  micInputSnapshot='';
   setTimeout(()=>showInterim(''),2500);
 }
 
@@ -1295,8 +1389,11 @@ function setupMic(){
 
 async function startListening(){
   if(isListening||!ensureSTTConfigured()) return;
+  stopWakeWordListener();
   hideTranscriptPreview(true);
   setTranscribingUI(false);
+  micInputSnapshot=document.getElementById('chat-input')?.value.trim()||'';
+  liveInterimText='';
   try{
     micStream=await navigator.mediaDevices.getUserMedia({
       audio:{
@@ -1407,9 +1504,10 @@ document.addEventListener('mouseup',()=>{
 
 document.getElementById('tog-stt').onchange=e=>{
   cfg.sttEnabled=e.target.checked;
-  if(!e.target.checked){stopListening(false);cancelTranscription();hideTranscriptPreview(true);}
+  if(!e.target.checked){stopListening(false);cancelTranscription();hideTranscriptPreview(true);stopWakeWordListener();}
   setupMic();
   updateSTTUI();
+  if(e.target.checked) setupWakeWordListener();
 };
 document.getElementById('stt-engine')?.addEventListener('change',e=>{
   cfg.sttEngine=e.target.value||'openai';
@@ -1446,6 +1544,7 @@ document.getElementById('tog-stt-wake')?.addEventListener('change',e=>{
 document.getElementById('stt-wake-word')?.addEventListener('input',e=>{
   cfg.wakeWordPhrase=e.target.value||'hey mascot';
   updateSTTUI();
+  if(cfg.wakeWordEnabled) setupWakeWordListener();
 });
 document.getElementById('stt-bilingual-bias')?.addEventListener('change',e=>{
   cfg.sttBilingualBias=e.target.value||'off';
