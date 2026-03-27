@@ -55,6 +55,7 @@ let cfg={
   customUrl:'',customKey:'',customModel:'',
   voiceEngine:'system',ttsEnabled:false,sttEnabled:false,systemVoice:'',
   sttEngine:'openai',sttLanguage:'auto',autoMicStop:true,autoMicSend:true,
+  micDeviceId:'',sttSilenceTimeoutMs:1600,sttSensitivity:0.014,
   elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
   piperPath:'',piperVoice:'',
   whisperCppPath:'',whisperCppModel:'',
@@ -67,6 +68,7 @@ let chatHistory=[],isThinking=false,isListening=false;
 let ttsQueue=[],ttsBusy=false,synthVoices=[],preferredVoice=null;
 let selectedElevenVoiceId='',currentFontSize=14;
 let currentPage='home',currentProviderTab='ollama',currentVoiceEngine='system';
+let availableMics=[],pendingTranscript='';
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -107,6 +109,10 @@ function applyConfig(){
   setEl('stt-language',cfg.sttLanguage||'auto');
   ck('tog-stt-auto-stop',cfg.autoMicStop!==false);
   ck('tog-stt-auto-send',cfg.autoMicSend!==false);
+  setEl('stt-silence-timeout',cfg.sttSilenceTimeoutMs||1600);
+  tv('stt-silence-timeout-val',`${Math.round((cfg.sttSilenceTimeoutMs||1600)/100)/10}s`);
+  setEl('stt-sensitivity',cfg.sttSensitivity||0.014);
+  tv('stt-sensitivity-val',Number(cfg.sttSensitivity||0.014).toFixed(3));
   setEl('eleven-key',cfg.elevenKey);setEl('eleven-model',cfg.elevenModel);
   setEl('piper-path',cfg.piperPath);setEl('piper-voice',cfg.piperVoice);
   setEl('whispercpp-path',cfg.whisperCppPath||'');
@@ -142,6 +148,7 @@ function applyConfig(){
   // STT
   setupMic();
   updateSTTUI();
+  loadMicDevices();
 }
 
 function getModelLabel(){
@@ -307,6 +314,25 @@ document.getElementById('ai-save-btn').onclick=()=>{
 };
 function val(id){const e=document.getElementById(id);return e?e.value:'';}
 
+async function loadMicDevices(){
+  const select=document.getElementById('stt-device');
+  if(!select) return;
+  try{
+    const devices=await navigator.mediaDevices.enumerateDevices();
+    availableMics=devices.filter(d=>d.kind==='audioinput');
+  }catch{
+    availableMics=[];
+  }
+  select.innerHTML='<option value="">System default microphone</option>';
+  availableMics.forEach((mic,idx)=>{
+    const opt=document.createElement('option');
+    opt.value=mic.deviceId;
+    opt.textContent=mic.label||`Microphone ${idx+1}`;
+    select.appendChild(opt);
+  });
+  select.value=(cfg.micDeviceId&&availableMics.some(m=>m.deviceId===cfg.micDeviceId))?cfg.micDeviceId:'';
+}
+
 // ─── Voice engine tabs ────────────────────────────────────
 function setVoiceEngine(ve){
   currentVoiceEngine=ve;
@@ -391,6 +417,9 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.sttLanguage=val('stt-language')||'auto';
   cfg.autoMicStop=document.getElementById('tog-stt-auto-stop')?.checked!==false;
   cfg.autoMicSend=document.getElementById('tog-stt-auto-send')?.checked!==false;
+  cfg.micDeviceId=val('stt-device');
+  cfg.sttSilenceTimeoutMs=parseInt(val('stt-silence-timeout')||'1600',10);
+  cfg.sttSensitivity=parseFloat(val('stt-sensitivity')||'0.014');
   cfg.elevenKey=val('eleven-key');cfg.elevenModel=val('eleven-model');
   cfg.elevenVoiceId=selectedElevenVoiceId||cfg.elevenVoiceId;
   cfg.piperPath=val('piper-path');cfg.piperVoice=val('piper-voice');
@@ -557,6 +586,9 @@ let audioSilencer   = null;
 let pcmChunks       = [];
 let silenceMs       = 0;
 let heardSpeech     = false;
+let transcribeAbortController=null;
+let transcribeChildProcess=null;
+let transcriptionCanceled=false;
 
 function getWhisperKey(){
   return cfg.openaiTTSKey || cfg.openaiKey || '';
@@ -607,6 +639,55 @@ function showInterim(text){
   if(!el)return;
   el.textContent=text;
   el.classList.toggle('active',!!text);
+}
+
+function setListeningVisuals(active){
+  document.getElementById('mic-btn')?.classList.toggle('listening',!!active);
+  document.getElementById('chat-canvas-wrap')?.classList.toggle('listening',!!active);
+}
+
+function setTranscribingUI(active,text='Transcribing...'){
+  const bar=document.getElementById('stt-transcribing-bar');
+  const label=document.getElementById('stt-transcribing-text');
+  if(label) label.textContent=text;
+  bar?.classList.toggle('active',!!active);
+}
+
+function showTranscriptPreview(text){
+  pendingTranscript=text||'';
+  const bar=document.getElementById('stt-preview-bar');
+  const label=document.getElementById('stt-preview-text');
+  if(label) label.textContent=pendingTranscript;
+  bar?.classList.add('active');
+}
+
+function hideTranscriptPreview(clear=false){
+  document.getElementById('stt-preview-bar')?.classList.remove('active');
+  if(clear) pendingTranscript='';
+}
+
+function discardPendingTranscript(){
+  const inp=document.getElementById('chat-input');
+  if(inp && pendingTranscript){
+    const suffix=` ${pendingTranscript}`;
+    if(inp.value===pendingTranscript) inp.value='';
+    else if(inp.value.endsWith(suffix)) inp.value=inp.value.slice(0,-suffix.length);
+  }
+  pendingTranscript='';
+  hideTranscriptPreview(true);
+}
+
+function cancelTranscription(){
+  transcriptionCanceled=true;
+  transcribeAbortController?.abort?.();
+  transcribeAbortController=null;
+  if(transcribeChildProcess && !transcribeChildProcess.killed){
+    try{transcribeChildProcess.kill();}catch{}
+  }
+  transcribeChildProcess=null;
+  setTranscribingUI(false);
+  showInterim('Transcription canceled');
+  setTimeout(()=>showInterim(''),2000);
 }
 
 function updateWhisperKeyStatus(){
@@ -777,7 +858,7 @@ function updateSTTUI(){
     const ready=!!(resolved.exe&&resolved.model&&fs.existsSync(resolved.exe)&&fs.existsSync(resolved.model));
     dot.className=`status-dot ${ready?'green':'yellow'}`;
     txt.textContent=ready
-      ? (resolved.source==='bundled'?'Bundled whisper.cpp is ready':'Local whisper.cpp is configured')
+      ? (resolved.source==='bundled'?'Bundled whisper.cpp is ready for this app build':'Custom local whisper.cpp path is configured')
       : 'Add whisper.cpp executable and model path below';
     txt.style.color=ready?'var(--green)':'var(--yellow)';
     return;
@@ -810,7 +891,7 @@ function ensureSTTConfigured(){
 function cleanupRecording(){
   clearInterval(recordingTimer);
   recordingTimer=null;
-  document.getElementById('mic-btn')?.classList.remove('listening');
+  setListeningVisuals(false);
   if(audioProcessor) audioProcessor.onaudioprocess=null;
   audioSource?.disconnect();
   audioProcessor?.disconnect();
@@ -864,10 +945,12 @@ function makeWavBlob(chunks,sampleRate){
 function applyTranscribedText(text){
   const clean=(text||'').trim();
   if(!clean){
+    setTranscribingUI(false);
     showInterim('Nothing detected - try again');
     setTimeout(()=>showInterim(''),2500);
     return;
   }
+  setTranscribingUI(false);
   const inp=document.getElementById('chat-input');
   inp.value=(inp.value?inp.value+' ':'')+clean;
   inp.style.height='auto';
@@ -875,9 +958,12 @@ function applyTranscribedText(text){
   const preview=clean.length>60?clean.slice(0,60)+'...':clean;
   showInterim(`OK: "${preview}"`);
   if(cfg.autoMicSend!==false && !isThinking){
+    hideTranscriptPreview(true);
     setTimeout(()=>send(),120);
     return;
   }
+  showTranscriptPreview(clean);
+  inp.focus();
   setTimeout(()=>showInterim(''),2500);
 }
 
@@ -889,6 +975,8 @@ async function transcribeAudio(audioBlob){
 async function transcribeWithOpenAI(audioBlob){
   const key=getWhisperKey();
   if(!key){showInterim('');return;}
+  transcriptionCanceled=false;
+  transcribeAbortController=new AbortController();
   const form=new FormData();
   form.append('file',audioBlob,'recording.wav');
   form.append('model','whisper-1');
@@ -899,6 +987,7 @@ async function transcribeWithOpenAI(audioBlob){
       method:'POST',
       headers:{Authorization:`Bearer ${key}`},
       body:form,
+      signal:transcribeAbortController.signal,
     });
     if(!res.ok){
       const errText=await res.text();
@@ -907,6 +996,7 @@ async function transcribeWithOpenAI(audioBlob){
     const data=await res.json();
     applyTranscribedText(data.text||'');
   }catch(err){
+    if(err.name==='AbortError' || transcriptionCanceled) return;
     console.error('[OpenAI STT]',err);
     const msg=err.message.includes('401')?'Invalid API key - check AI Model settings'
              :err.message.includes('429')?'Rate limit hit - try again in a moment'
@@ -914,10 +1004,13 @@ async function transcribeWithOpenAI(audioBlob){
              :String(err.message||err).slice(0,70);
     showInterim(msg);
     setTimeout(()=>showInterim(''),4000);
+  }finally{
+    transcribeAbortController=null;
   }
 }
 
 async function transcribeWithWhisperCpp(audioBlob){
+  transcriptionCanceled=false;
   const { exe, model }=getEffectiveWhisperPaths();
   if(!exe||!model){
     showInterim('Add whisper.cpp executable and model path first');
@@ -937,7 +1030,7 @@ async function transcribeWithWhisperCpp(audioBlob){
     const args=['-m',model,'-f',audioPath,'-otxt','-of',outputBase];
     if(getSTTLanguage()!=='auto') args.push('-l',getSTTLanguage());
     await new Promise((resolve,reject)=>{
-      execFile(exe,args,{windowsHide:true},(err,stdout,stderr)=>{
+      transcribeChildProcess=execFile(exe,args,{windowsHide:true},(err,stdout,stderr)=>{
         if(err) reject(new Error(stderr?.trim()||stdout?.trim()||err.message));
         else resolve();
       });
@@ -945,10 +1038,12 @@ async function transcribeWithWhisperCpp(audioBlob){
     const text=fs.existsSync(outputPath)?fs.readFileSync(outputPath,'utf8'):'';
     applyTranscribedText(text);
   }catch(err){
+    if(transcriptionCanceled) return;
     console.error('[whisper.cpp STT]',err);
     showInterim(`Local STT failed: ${String(err.message||err).slice(0,80)}`);
     setTimeout(()=>showInterim(''),4500);
   }finally{
+    transcribeChildProcess=null;
     [audioPath,outputPath].forEach(f=>{try{fs.existsSync(f)&&fs.unlinkSync(f);}catch{}});
     try{
       fs.readdirSync(tempDir)
@@ -980,10 +1075,16 @@ function setupMic(){
 
 async function startListening(){
   if(isListening||!ensureSTTConfigured()) return;
+  hideTranscriptPreview(true);
+  setTranscribingUI(false);
   try{
     micStream=await navigator.mediaDevices.getUserMedia({
-      audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}
+      audio:{
+        deviceId:cfg.micDeviceId?{exact:cfg.micDeviceId}:undefined,
+        channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true
+      }
     });
+    loadMicDevices();
     const AC=window.AudioContext||window.webkitAudioContext;
     audioContext=new AC({sampleRate:16000});
     audioSource=audioContext.createMediaStreamSource(micStream);
@@ -1003,12 +1104,12 @@ async function startListening(){
       for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
       const rms=Math.sqrt(sum/input.length);
       const chunkMs=(input.length/(audioContext?.sampleRate||16000))*1000;
-      if(rms>0.014){
+      if(rms>(cfg.sttSensitivity||0.014)){
         heardSpeech=true;
         silenceMs=0;
       }else if(heardSpeech){
         silenceMs+=chunkMs;
-        if(cfg.autoMicStop!==false && silenceMs>=1600){
+        if(cfg.autoMicStop!==false && silenceMs>=(cfg.sttSilenceTimeoutMs||1600)){
           stopListening(true);
         }
       }
@@ -1023,7 +1124,7 @@ async function startListening(){
     setTimeout(()=>showInterim(''),4000);
     return;
   }
-  document.getElementById('mic-btn')?.classList.add('listening');
+  setListeningVisuals(true);
   recordingTimer=setInterval(updateMicTimer,1000);
   showInterim('Recording 00:00 - click mic again to transcribe');
 }
@@ -1051,9 +1152,11 @@ function stopListening(sendAudio=true){
     return;
   }
   showInterim('Transcribing...');
+  setTranscribingUI(true,'Transcribing speech...');
   const audioBlob=makeWavBlob(recordedChunks,16000);
   transcribeAudio(audioBlob).catch(err=>{
     console.error('[STT]',err);
+    setTranscribingUI(false);
     showInterim(String(err.message||err).slice(0,80));
     setTimeout(()=>showInterim(''),4000);
   });
@@ -1066,7 +1169,7 @@ document.getElementById('mic-btn').onclick=()=>{
 
 document.getElementById('tog-stt').onchange=e=>{
   cfg.sttEnabled=e.target.checked;
-  if(!e.target.checked) stopListening(false);
+  if(!e.target.checked){stopListening(false);cancelTranscription();hideTranscriptPreview(true);}
   setupMic();
   updateSTTUI();
 };
@@ -1078,6 +1181,32 @@ document.getElementById('stt-engine')?.addEventListener('change',e=>{
 document.getElementById('stt-language')?.addEventListener('change',e=>{
   cfg.sttLanguage=e.target.value||'auto';
 });
+document.getElementById('stt-device')?.addEventListener('change',e=>{
+  cfg.micDeviceId=e.target.value||'';
+});
+document.getElementById('stt-silence-timeout')?.addEventListener('input',e=>{
+  const value=parseInt(e.target.value,10)||1600;
+  cfg.sttSilenceTimeoutMs=value;
+  tv('stt-silence-timeout-val',`${Math.round(value/100)/10}s`);
+});
+document.getElementById('stt-sensitivity')?.addEventListener('input',e=>{
+  const value=parseFloat(e.target.value)||0.014;
+  cfg.sttSensitivity=value;
+  tv('stt-sensitivity-val',value.toFixed(3));
+});
+document.getElementById('stt-cancel-btn')?.addEventListener('click',cancelTranscription);
+document.getElementById('stt-edit-btn')?.addEventListener('click',()=>{
+  hideTranscriptPreview(false);
+  document.getElementById('chat-input')?.focus();
+});
+document.getElementById('stt-send-btn')?.addEventListener('click',()=>{
+  hideTranscriptPreview(true);
+  send();
+});
+document.getElementById('stt-discard-btn')?.addEventListener('click',()=>{
+  discardPendingTranscript();
+});
+navigator.mediaDevices?.addEventListener?.('devicechange',()=>loadMicDevices());
 
 // ─── Chat font size ───────────────────────────────────────
 function applyChatFont(){
@@ -1299,6 +1428,7 @@ async function send(){
   const inp=document.getElementById('chat-input');
   const text=inp.value.trim();
   if(!text||isThinking)return;
+  hideTranscriptPreview(true);
   inp.value='';inp.style.height='auto';
   resetIdleTimer();
   document.getElementById('quick-prompts-bar')?.remove();

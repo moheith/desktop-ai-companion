@@ -256,6 +256,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 #mic-interim{font-size:11px;color:var(--pink);font-family:'Space Mono',monospace;padding:0 4px;
   min-height:0;max-height:40px;overflow:hidden;transition:max-height 0.2s;display:none;}
 #mic-interim.active{display:block;}
+.stt-inline-bar{display:none;align-items:center;justify-content:space-between;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;}
+.stt-inline-bar.active{display:flex;}
+.stt-inline-text{font-size:11px;color:var(--text2);line-height:1.45;flex:1;min-width:0;}
+.stt-inline-actions{display:flex;gap:6px;align-items:center;flex-shrink:0;}
+.stt-mini-btn{background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text2);padding:6px 10px;cursor:pointer;font-size:11px;transition:all 0.15s;}
+.stt-mini-btn:hover{border-color:var(--pink);color:var(--pink);}
+.stt-mini-btn.danger:hover{border-color:var(--red);color:var(--red);}
 .input-row{display:flex;gap:8px;align-items:flex-end;}
 #chat-input{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:10px;color:var(--text);
   padding:8px 12px;font-family:'Outfit',sans-serif;outline:none;resize:none;
@@ -272,6 +279,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 #mic-btn.active-display{display:flex;}
 #mic-btn.listening{background:var(--red);border-color:var(--red);color:white;animation:pulse 1s ease infinite;}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,0.4)}50%{box-shadow:0 0 0 7px rgba(248,113,113,0)}}
+#chat-canvas-wrap.listening{box-shadow:0 0 0 1px rgba(248,113,113,0.8),0 0 22px rgba(248,113,113,0.35);animation:listenGlow 1s ease infinite;}
+@keyframes listenGlow{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}
 
 .provider-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px;}
 .ptab{padding:7px 14px;border-radius:var(--radius2);border:1px solid var(--border);background:var(--s2);
@@ -488,6 +497,20 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
         </div>
         <div id="chat-input-bar">
           <div id="mic-interim"></div>
+          <div class="stt-inline-bar" id="stt-transcribing-bar">
+            <div class="stt-inline-text" id="stt-transcribing-text">Transcribing...</div>
+            <div class="stt-inline-actions">
+              <button class="stt-mini-btn danger" id="stt-cancel-btn">Cancel</button>
+            </div>
+          </div>
+          <div class="stt-inline-bar" id="stt-preview-bar">
+            <div class="stt-inline-text" id="stt-preview-text"></div>
+            <div class="stt-inline-actions">
+              <button class="stt-mini-btn" id="stt-edit-btn">Edit</button>
+              <button class="stt-mini-btn" id="stt-send-btn">Send</button>
+              <button class="stt-mini-btn danger" id="stt-discard-btn">Discard</button>
+            </div>
+          </div>
           <div class="input-row">
             <button class="icon-btn" id="mic-btn" title="Click to start recording • click again to send">🎤</button>
             <textarea id="chat-input" rows="1" placeholder="Type a message… (Enter to send, Shift+Enter for new line)"></textarea>
@@ -746,12 +769,17 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 <label class="toggle"><input type="checkbox" id="tog-stt"/><div class="track"><div class="thumb"></div></div></label>
               </div>
 
+              <div class="hint" style="margin-bottom:12px;">
+                Choose an STT engine below, then save once. Local whisper.cpp is the best option for privacy and packaged builds.
+              </div>
+
+              <div class="card-header" style="margin:-2px 0 10px;">Recording Behavior</div>
               <div class="card-grid cols2" style="margin-bottom:12px;">
                 <div class="field">
-                  <label>STT Engine</label>
+                  <label>Speech Engine</label>
                   <select class="inp" id="stt-engine">
-                    <option value="openai">OpenAI Whisper</option>
                     <option value="local">Local whisper.cpp</option>
+                    <option value="openai">OpenAI Whisper</option>
                   </select>
                 </div>
                 <div class="field">
@@ -761,6 +789,36 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                     <option value="en">English</option>
                     <option value="hi">Hindi</option>
                   </select>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Microphone Device</label>
+                  <select class="inp" id="stt-device">
+                    <option value="">System default microphone</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Silence Timeout</label>
+                  <div class="slider-row" style="gap:4px;">
+                    <div class="slider-top"><span class="slider-label">Auto-stop delay</span><span class="slider-val" id="stt-silence-timeout-val">1.6s</span></div>
+                    <input type="range" id="stt-silence-timeout" min="800" max="3500" step="100" value="1600"/>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Mic Sensitivity</label>
+                  <div class="slider-row" style="gap:4px;">
+                    <div class="slider-top"><span class="slider-label">Speech threshold</span><span class="slider-val" id="stt-sensitivity-val">0.014</span></div>
+                    <input type="range" id="stt-sensitivity" min="0.006" max="0.040" step="0.001" value="0.014"/>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Transcript Flow</label>
+                  <div class="hint" style="padding-top:6px;">Turn off auto-send below if you want to review and edit the transcript before sending.</div>
                 </div>
               </div>
 
@@ -789,6 +847,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 </div>
               </div>
 
+              <div class="card-header" style="margin:-2px 0 10px;">How It Works</div>
               <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:14px;">
                 <div style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius2);padding:10px;text-align:center;">
                   <div style="font-size:20px;margin-bottom:4px;">🎤</div>
@@ -804,6 +863,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 </div>
               </div>
 
+              <div class="card-header" style="margin:-2px 0 10px;">Engine Status</div>
               <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;
                 background:var(--bg);border:1px solid var(--border);border-radius:var(--radius2);margin-bottom:10px;">
                 <span id="whisper-key-dot" class="status-dot grey"></span>
@@ -819,6 +879,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
               </div>
 
               <div id="stt-local-box" style="display:none;margin-bottom:10px;">
+                <div class="hint" style="margin-bottom:10px;">
+                  Uses the bundled <b>whisper.cpp</b> runtime when available. You can still override it with custom paths below.
+                </div>
                 <div class="card-grid cols2" style="margin-bottom:10px;">
                   <div class="field">
                     <label>whisper.cpp Executable</label>

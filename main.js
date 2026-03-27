@@ -16,6 +16,7 @@ const store = new Store({
     customUrl:'',customKey:'',customModel:'',
     voiceEngine:'system',ttsEnabled:false,sttEnabled:false,
     sttEngine:'openai',sttLanguage:'auto',autoMicStop:true,autoMicSend:true,
+    micDeviceId:'',sttSilenceTimeoutMs:1600,sttSensitivity:0.014,
     systemVoice:'',
     elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
     piperPath:'',piperVoice:'',
