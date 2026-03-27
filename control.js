@@ -56,6 +56,9 @@ let cfg={
   voiceEngine:'system',ttsEnabled:false,sttEnabled:false,systemVoice:'',
   sttEngine:'openai',sttLanguage:'auto',autoMicStop:true,autoMicSend:true,
   micDeviceId:'',sttSilenceTimeoutMs:1600,sttSensitivity:0.014,
+  sttHoldToTalk:false,wakeWordEnabled:false,wakeWordPhrase:'hey mascot',
+  sttBilingualBias:'off',sttNoisePreset:'medium',sttMode:'chat',
+  micProfiles:{},
   elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
   piperPath:'',piperVoice:'',
   whisperCppPath:'',whisperCppModel:'',
@@ -69,6 +72,8 @@ let ttsQueue=[],ttsBusy=false,synthVoices=[],preferredVoice=null;
 let selectedElevenVoiceId='',currentFontSize=14;
 let currentPage='home',currentProviderTab='ollama',currentVoiceEngine='system';
 let availableMics=[],pendingTranscript='';
+let liveRecognition=null,wakeRecognition=null,wakeListening=false;
+let latestTranscriptConfidence=null,lastVoiceCommand='';
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -109,10 +114,17 @@ function applyConfig(){
   setEl('stt-language',cfg.sttLanguage||'auto');
   ck('tog-stt-auto-stop',cfg.autoMicStop!==false);
   ck('tog-stt-auto-send',cfg.autoMicSend!==false);
+  ck('tog-stt-hold',!!cfg.sttHoldToTalk);
+  ck('tog-stt-wake',!!cfg.wakeWordEnabled);
+  setEl('stt-wake-word',cfg.wakeWordPhrase||'hey mascot');
+  setEl('stt-bilingual-bias',cfg.sttBilingualBias||'off');
+  setEl('stt-noise-preset',cfg.sttNoisePreset||'medium');
+  setEl('stt-mode',cfg.sttMode||'chat');
   setEl('stt-silence-timeout',cfg.sttSilenceTimeoutMs||1600);
   tv('stt-silence-timeout-val',`${Math.round((cfg.sttSilenceTimeoutMs||1600)/100)/10}s`);
   setEl('stt-sensitivity',cfg.sttSensitivity||0.014);
   tv('stt-sensitivity-val',Number(cfg.sttSensitivity||0.014).toFixed(3));
+  applyDeviceProfile(cfg.micDeviceId||'',false);
   setEl('eleven-key',cfg.elevenKey);setEl('eleven-model',cfg.elevenModel);
   setEl('piper-path',cfg.piperPath);setEl('piper-voice',cfg.piperVoice);
   setEl('whispercpp-path',cfg.whisperCppPath||'');
@@ -149,6 +161,7 @@ function applyConfig(){
   setupMic();
   updateSTTUI();
   loadMicDevices();
+  setupWakeWordListener();
 }
 
 function getModelLabel(){
@@ -333,6 +346,197 @@ async function loadMicDevices(){
   select.value=(cfg.micDeviceId&&availableMics.some(m=>m.deviceId===cfg.micDeviceId))?cfg.micDeviceId:'';
 }
 
+function applyDeviceProfile(deviceId,updateInputs=true){
+  const profiles=cfg.micProfiles||{};
+  const profile=deviceId?profiles[deviceId]:null;
+  if(!profile) return;
+  if(profile.sttSilenceTimeoutMs!=null) cfg.sttSilenceTimeoutMs=profile.sttSilenceTimeoutMs;
+  if(profile.sttSensitivity!=null) cfg.sttSensitivity=profile.sttSensitivity;
+  if(profile.sttNoisePreset) cfg.sttNoisePreset=profile.sttNoisePreset;
+  if(updateInputs){
+    setEl('stt-silence-timeout',cfg.sttSilenceTimeoutMs||1600);
+    tv('stt-silence-timeout-val',`${Math.round((cfg.sttSilenceTimeoutMs||1600)/100)/10}s`);
+    setEl('stt-sensitivity',cfg.sttSensitivity||0.014);
+    tv('stt-sensitivity-val',Number(cfg.sttSensitivity||0.014).toFixed(3));
+    setEl('stt-noise-preset',cfg.sttNoisePreset||'medium');
+  }
+}
+
+function saveCurrentMicProfile(){
+  if(!cfg.micDeviceId) return;
+  cfg.micProfiles=cfg.micProfiles||{};
+  cfg.micProfiles[cfg.micDeviceId]={
+    sttSilenceTimeoutMs:cfg.sttSilenceTimeoutMs,
+    sttSensitivity:cfg.sttSensitivity,
+    sttNoisePreset:cfg.sttNoisePreset,
+  };
+}
+
+function getNoisePresetConstraints(){
+  switch(cfg.sttNoisePreset){
+    case 'low': return { echoCancellation:false, noiseSuppression:false, autoGainControl:false };
+    case 'high': return { echoCancellation:true, noiseSuppression:true, autoGainControl:true };
+    default: return { echoCancellation:true, noiseSuppression:true, autoGainControl:false };
+  }
+}
+
+function getSpeechRecognitionCtor(){
+  return window.SpeechRecognition||window.webkitSpeechRecognition||null;
+}
+
+function getLiveRecognitionLang(){
+  if(cfg.sttBilingualBias==='hi-en') return 'hi-IN';
+  if(cfg.sttLanguage==='hi') return 'hi-IN';
+  if(cfg.sttLanguage==='en') return 'en-US';
+  return 'en-IN';
+}
+
+function updateConfidenceUI(conf){
+  latestTranscriptConfidence=Number.isFinite(conf)?conf:null;
+  const label=document.getElementById('stt-confidence-text');
+  if(label) label.textContent=latestTranscriptConfidence!=null?`${Math.round(latestTranscriptConfidence*100)}%`: 'n/a';
+}
+
+function startLiveRecognition(){
+  stopLiveRecognition();
+  const Ctor=getSpeechRecognitionCtor();
+  if(!Ctor) { updateConfidenceUI(null); return; }
+  liveRecognition=new Ctor();
+  liveRecognition.continuous=true;
+  liveRecognition.interimResults=true;
+  liveRecognition.lang=getLiveRecognitionLang();
+  liveRecognition.onresult=e=>{
+    let interim='';
+    let bestConfidence=null;
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const result=e.results[i];
+      const alt=result[0];
+      if(!alt) continue;
+      if(typeof alt.confidence==='number') bestConfidence=Math.max(bestConfidence??0,alt.confidence);
+      interim+=alt.transcript||'';
+    }
+    updateConfidenceUI(bestConfidence);
+    if(interim.trim()) showInterim(`Live: ${interim.trim()}`);
+  };
+  liveRecognition.onerror=()=>{};
+  liveRecognition.onend=()=>{liveRecognition=null;};
+  try{liveRecognition.start();}catch{}
+}
+
+function stopLiveRecognition(){
+  try{liveRecognition?.stop?.();}catch{}
+  liveRecognition=null;
+}
+
+function normalizeVoiceText(text){
+  return (text||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim();
+}
+
+function extractWakePayload(text){
+  const normalized=normalizeVoiceText(text);
+  const wake=normalizeVoiceText(cfg.wakeWordPhrase||'hey mascot');
+  if(!wake) return text.trim();
+  const idx=normalized.indexOf(wake);
+  if(idx===-1) return '';
+  const after=normalized.slice(idx+wake.length).trim();
+  return after || '__wake__';
+}
+
+function executeVoiceCommand(rawText){
+  const text=normalizeVoiceText(rawText);
+  if(!text) return false;
+  lastVoiceCommand=text;
+  if(/^(hide|close) (mascot|character)$/.test(text)){ cfg.mascotVisible=false; ck('tog-mascot',false); ipcRenderer.send('toggle-mascot',false); updateHomeCards(); return true; }
+  if(/^(show|open) (mascot|character)$/.test(text)){ cfg.mascotVisible=true; ck('tog-mascot',true); ipcRenderer.send('toggle-mascot',true); updateHomeCards(); return true; }
+  if(/^(mascot chupa do|character chupa do)$/.test(text)){ cfg.mascotVisible=false; ck('tog-mascot',false); ipcRenderer.send('toggle-mascot',false); updateHomeCards(); return true; }
+  if(/^(mascot dikhao|character dikhao)$/.test(text)){ cfg.mascotVisible=true; ck('tog-mascot',true); ipcRenderer.send('toggle-mascot',true); updateHomeCards(); return true; }
+  if(/^(open|show) (settings|control panel)$/.test(text)){ switchPage('voice'); return true; }
+  if(/^(settings kholo|control panel kholo)$/.test(text)){ switchPage('voice'); return true; }
+  if(/^(open|show) chat$/.test(text)){ switchPage('chat'); return true; }
+  if(/^(open|show) voice( settings)?$/.test(text)){ switchPage('voice'); return true; }
+  if(/^(open|show) memory$/.test(text)){ switchPage('memory'); return true; }
+  if(/^(chat kholo|voice kholo|memory kholo)$/.test(text)){ if(text.startsWith('chat')) switchPage('chat'); else if(text.startsWith('voice')) switchPage('voice'); else switchPage('memory'); return true; }
+  if(/^(enable|turn on) click through$/.test(text)){ cfg.clickThrough=true; ck('tog-click',true); ipcRenderer.send('toggle-click-through',true); return true; }
+  if(/^(disable|turn off) click through$/.test(text)){ cfg.clickThrough=false; ck('tog-click',false); ipcRenderer.send('toggle-click-through',false); return true; }
+  if(/^(show|enable) border$/.test(text)){ cfg.borderVisible=true; ck('tog-border',true); ipcRenderer.send('toggle-border',true); return true; }
+  if(/^(hide|disable) border$/.test(text)){ cfg.borderVisible=false; ck('tog-border',false); ipcRenderer.send('toggle-border',false); return true; }
+  if(/^(go|switch) home$/.test(text)){ switchPage('home'); return true; }
+  if(/^(stop|cancel) listening$/.test(text)){ stopListening(false); return true; }
+  return false;
+}
+
+function handleVoiceTranscript(text,meta={}){
+  const trimmed=(text||'').trim();
+  if(!trimmed) return true;
+  let payload=trimmed;
+  if(cfg.wakeWordEnabled){
+    payload=extractWakePayload(trimmed);
+    if(!payload) return true;
+    if(payload==='__wake__'){
+      showInterim('Wake word heard. Listening for command...');
+      setTimeout(()=>showInterim(''),1500);
+      return true;
+    }
+  }
+  if(cfg.sttMode==='command'){
+    if(executeVoiceCommand(payload)){
+      showInterim(`Command: ${payload}`);
+      setTimeout(()=>showInterim(''),1800);
+      hideTranscriptPreview(true);
+      if(meta.applyToInput){
+        const inp=document.getElementById('chat-input');
+        if(inp) inp.value='';
+      }
+      return true;
+    }
+  }
+  if(cfg.sttMode==='command' && !executeVoiceCommand(payload)){
+    showInterim('No matching voice command');
+    setTimeout(()=>showInterim(''),1800);
+    if(meta.applyToInput){
+      const inp=document.getElementById('chat-input');
+      if(inp) inp.value='';
+    }
+    return true;
+  }
+  return false;
+}
+
+async function setupWakeWordListener(){
+  try{wakeRecognition?.stop?.();}catch{}
+  wakeRecognition=null;
+  wakeListening=false;
+  if(!cfg.sttEnabled || !cfg.wakeWordEnabled || isListening) return;
+  const Ctor=getSpeechRecognitionCtor();
+  if(!Ctor) return;
+  wakeRecognition=new Ctor();
+  wakeRecognition.continuous=true;
+  wakeRecognition.interimResults=true;
+  wakeRecognition.lang=getLiveRecognitionLang();
+  wakeRecognition.onresult=e=>{
+    let heard='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      heard+=e.results[i][0]?.transcript||'';
+    }
+    const payload=extractWakePayload(heard);
+    if(payload){
+      try{wakeRecognition?.stop?.();}catch{}
+      wakeRecognition=null;
+      wakeListening=false;
+      startListening();
+    }
+  };
+  wakeRecognition.onend=()=>{
+    wakeListening=false;
+    if(cfg.wakeWordEnabled && !isListening) setTimeout(()=>setupWakeWordListener(),800);
+  };
+  wakeRecognition.onerror=()=>{};
+  try{
+    wakeRecognition.start();
+    wakeListening=true;
+  }catch{}
+}
+
 // ─── Voice engine tabs ────────────────────────────────────
 function setVoiceEngine(ve){
   currentVoiceEngine=ve;
@@ -417,6 +621,12 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.sttLanguage=val('stt-language')||'auto';
   cfg.autoMicStop=document.getElementById('tog-stt-auto-stop')?.checked!==false;
   cfg.autoMicSend=document.getElementById('tog-stt-auto-send')?.checked!==false;
+  cfg.sttHoldToTalk=document.getElementById('tog-stt-hold')?.checked===true;
+  cfg.wakeWordEnabled=document.getElementById('tog-stt-wake')?.checked===true;
+  cfg.wakeWordPhrase=(val('stt-wake-word')||'hey mascot').trim();
+  cfg.sttBilingualBias=val('stt-bilingual-bias')||'off';
+  cfg.sttNoisePreset=val('stt-noise-preset')||'medium';
+  cfg.sttMode=val('stt-mode')||'chat';
   cfg.micDeviceId=val('stt-device');
   cfg.sttSilenceTimeoutMs=parseInt(val('stt-silence-timeout')||'1600',10);
   cfg.sttSensitivity=parseFloat(val('stt-sensitivity')||'0.014');
@@ -428,9 +638,11 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.openaiTTSKey=val('openai-tts-key');
   cfg.openaiTTSModel=val('openai-tts-model');
   cfg.openaiTTSVoice=openAITTSVoice;
+  saveCurrentMicProfile();
   ipcRenderer.send('save-config',{...cfg});
   flash('voice-save-ok');setupMic();updateHomeCards();
   updateSTTUI();
+  setupWakeWordListener();
 };
 
 // ─── TTS ──────────────────────────────────────────────────
@@ -849,9 +1061,13 @@ function updateSTTUI(){
   const txt=document.getElementById('whisper-key-status');
   const openaiBox=document.getElementById('stt-openai-box');
   const localBox=document.getElementById('stt-local-box');
+  const modeChip=document.getElementById('stt-mode-chip');
+  const wakeChip=document.getElementById('stt-wake-chip');
   const engine=getSTTEngine();
   if(openaiBox) openaiBox.style.display=engine==='openai'?'block':'none';
   if(localBox) localBox.style.display=engine==='local'?'block':'none';
+  if(modeChip) modeChip.textContent=`mode: ${cfg.sttMode||'chat'}`;
+  if(wakeChip) wakeChip.textContent=`wake word: ${cfg.wakeWordEnabled?(cfg.wakeWordPhrase||'on'):'off'}`;
   if(!dot||!txt)return;
   if(engine==='local'){
     const resolved=getEffectiveWhisperPaths();
@@ -951,6 +1167,8 @@ function applyTranscribedText(text){
     return;
   }
   setTranscribingUI(false);
+  const consumed=handleVoiceTranscript(clean,{applyToInput:true});
+  if(consumed) return;
   const inp=document.getElementById('chat-input');
   inp.value=(inp.value?inp.value+' ':'')+clean;
   inp.style.height='auto';
@@ -1006,6 +1224,7 @@ async function transcribeWithOpenAI(audioBlob){
     setTimeout(()=>showInterim(''),4000);
   }finally{
     transcribeAbortController=null;
+    if(!isListening) setupWakeWordListener();
   }
 }
 
@@ -1050,6 +1269,7 @@ async function transcribeWithWhisperCpp(audioBlob){
         .filter(name=>name.startsWith(`transcript-${stamp}`))
         .forEach(name=>{try{fs.unlinkSync(path.join(tempDir,name));}catch{}});
     }catch{}
+    if(!isListening) setupWakeWordListener();
   }
 }
 
@@ -1070,7 +1290,7 @@ function setupMic(){
     return;
   }
   btn.classList.add('active-display');
-  btn.title=`Click to start recording - click again to transcribe with ${getSTTEngine()==='local'?'local whisper.cpp':'OpenAI Whisper'}`;
+  btn.title=`${cfg.sttHoldToTalk?'Hold to talk':'Click to start recording'} - ${getSTTEngine()==='local'?'local whisper.cpp':'OpenAI Whisper'}`;
 }
 
 async function startListening(){
@@ -1081,7 +1301,8 @@ async function startListening(){
     micStream=await navigator.mediaDevices.getUserMedia({
       audio:{
         deviceId:cfg.micDeviceId?{exact:cfg.micDeviceId}:undefined,
-        channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true
+        channelCount:1,
+        ...getNoisePresetConstraints()
       }
     });
     loadMicDevices();
@@ -1117,6 +1338,7 @@ async function startListening(){
     audioSource.connect(audioProcessor);
     audioProcessor.connect(audioSilencer);
     audioSilencer.connect(audioContext.destination);
+    startLiveRecognition();
   }catch(err){
     console.error('[STT] Start failed:',err);
     cleanupRecording();
@@ -1130,10 +1352,12 @@ async function startListening(){
 }
 
 function stopListening(sendAudio=true){
+  stopLiveRecognition();
   if(!isListening&&!sendAudio){
     cleanupRecording();
     showInterim('');
     pcmChunks=[];
+    setupWakeWordListener();
     return;
   }
   isListening=false;
@@ -1141,6 +1365,7 @@ function stopListening(sendAudio=true){
     cleanupRecording();
     showInterim('');
     pcmChunks=[];
+    setupWakeWordListener();
     return;
   }
   const recordedChunks=pcmChunks;
@@ -1162,10 +1387,23 @@ function stopListening(sendAudio=true){
   });
 }
 
-document.getElementById('mic-btn').onclick=()=>{
+const micBtn=document.getElementById('mic-btn');
+micBtn.onclick=()=>{
+  if(cfg.sttHoldToTalk) return;
   if(isListening) stopListening(true);
   else            startListening();
 };
+micBtn.addEventListener('mousedown',e=>{
+  if(!cfg.sttHoldToTalk || e.button!==0) return;
+  e.preventDefault();
+  startListening();
+});
+['mouseup','mouseleave'].forEach(evt=>micBtn.addEventListener(evt,()=>{
+  if(cfg.sttHoldToTalk && isListening) stopListening(true);
+}));
+document.addEventListener('mouseup',()=>{
+  if(cfg.sttHoldToTalk && isListening) stopListening(true);
+});
 
 document.getElementById('tog-stt').onchange=e=>{
   cfg.sttEnabled=e.target.checked;
@@ -1182,7 +1420,9 @@ document.getElementById('stt-language')?.addEventListener('change',e=>{
   cfg.sttLanguage=e.target.value||'auto';
 });
 document.getElementById('stt-device')?.addEventListener('change',e=>{
+  saveCurrentMicProfile();
   cfg.micDeviceId=e.target.value||'';
+  applyDeviceProfile(cfg.micDeviceId,true);
 });
 document.getElementById('stt-silence-timeout')?.addEventListener('input',e=>{
   const value=parseInt(e.target.value,10)||1600;
@@ -1193,6 +1433,29 @@ document.getElementById('stt-sensitivity')?.addEventListener('input',e=>{
   const value=parseFloat(e.target.value)||0.014;
   cfg.sttSensitivity=value;
   tv('stt-sensitivity-val',value.toFixed(3));
+});
+document.getElementById('tog-stt-hold')?.addEventListener('change',e=>{
+  cfg.sttHoldToTalk=e.target.checked;
+  setupMic();
+});
+document.getElementById('tog-stt-wake')?.addEventListener('change',e=>{
+  cfg.wakeWordEnabled=e.target.checked;
+  updateSTTUI();
+  setupWakeWordListener();
+});
+document.getElementById('stt-wake-word')?.addEventListener('input',e=>{
+  cfg.wakeWordPhrase=e.target.value||'hey mascot';
+  updateSTTUI();
+});
+document.getElementById('stt-bilingual-bias')?.addEventListener('change',e=>{
+  cfg.sttBilingualBias=e.target.value||'off';
+});
+document.getElementById('stt-noise-preset')?.addEventListener('change',e=>{
+  cfg.sttNoisePreset=e.target.value||'medium';
+});
+document.getElementById('stt-mode')?.addEventListener('change',e=>{
+  cfg.sttMode=e.target.value||'chat';
+  updateSTTUI();
 });
 document.getElementById('stt-cancel-btn')?.addEventListener('click',cancelTranscription);
 document.getElementById('stt-edit-btn')?.addEventListener('click',()=>{

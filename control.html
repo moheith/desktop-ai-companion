@@ -263,6 +263,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 .stt-mini-btn{background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text2);padding:6px 10px;cursor:pointer;font-size:11px;transition:all 0.15s;}
 .stt-mini-btn:hover{border-color:var(--pink);color:var(--pink);}
 .stt-mini-btn.danger:hover{border-color:var(--red);color:var(--red);}
+.stt-meta{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 4px;font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;}
 .input-row{display:flex;gap:8px;align-items:flex-end;}
 #chat-input{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:10px;color:var(--text);
   padding:8px 12px;font-family:'Outfit',sans-serif;outline:none;resize:none;
@@ -497,6 +498,11 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
         </div>
         <div id="chat-input-bar">
           <div id="mic-interim"></div>
+          <div class="stt-meta">
+            <span>confidence: <span id="stt-confidence-text">n/a</span></span>
+            <span id="stt-mode-chip">mode: chat</span>
+            <span id="stt-wake-chip">wake word: off</span>
+          </div>
           <div class="stt-inline-bar" id="stt-transcribing-bar">
             <div class="stt-inline-text" id="stt-transcribing-text">Transcribing...</div>
             <div class="stt-inline-actions">
@@ -810,6 +816,43 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 
               <div class="card-grid cols2" style="margin-bottom:12px;">
                 <div class="field">
+                  <label>Talk Style</label>
+                  <div class="trow" style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius2);padding:10px 12px;">
+                    <div class="tl">
+                      <span class="tl-n">Press and hold to talk</span>
+                      <span class="tl-d">Hold the mic button down instead of click-to-toggle</span>
+                    </div>
+                    <label class="toggle"><input type="checkbox" id="tog-stt-hold"/><div class="track"><div class="thumb"></div></div></label>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Wake Word</label>
+                  <div class="trow" style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius2);padding:10px 12px;">
+                    <div class="tl">
+                      <span class="tl-n">Enable wake word</span>
+                      <span class="tl-d">Best-effort browser listener that starts recording after the phrase is heard</span>
+                    </div>
+                    <label class="toggle"><input type="checkbox" id="tog-stt-wake"/><div class="track"><div class="thumb"></div></div></label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Wake Word Phrase</label>
+                  <input class="inp" id="stt-wake-word" placeholder="hey mascot"/>
+                </div>
+                <div class="field">
+                  <label>Mode</label>
+                  <select class="inp" id="stt-mode">
+                    <option value="chat">Chat mode</option>
+                    <option value="command">Command mode</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
                   <label>Mic Sensitivity</label>
                   <div class="slider-row" style="gap:4px;">
                     <div class="slider-top"><span class="slider-label">Speech threshold</span><span class="slider-val" id="stt-sensitivity-val">0.014</span></div>
@@ -819,6 +862,24 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 <div class="field">
                   <label>Transcript Flow</label>
                   <div class="hint" style="padding-top:6px;">Turn off auto-send below if you want to review and edit the transcript before sending.</div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Bilingual Bias</label>
+                  <select class="inp" id="stt-bilingual-bias">
+                    <option value="off">Off</option>
+                    <option value="hi-en">Hindi / English</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Noise Suppression</label>
+                  <select class="inp" id="stt-noise-preset">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
                 </div>
               </div>
 
