@@ -2,7 +2,7 @@ const { ipcRenderer, shell: electronShell } = require('electron');
 const fs       = require('fs');
 const path     = require('path');
 const os       = require('os');
-const { exec, execFile, spawn } = require('child_process');
+const { exec, execFile } = require('child_process');
 
 // ─── Splash ───────────────────────────────────────────────
 const splashBar = document.getElementById('splash-bar');
@@ -72,13 +72,10 @@ let ttsQueue=[],ttsBusy=false,synthVoices=[],preferredVoice=null;
 let selectedElevenVoiceId='',currentFontSize=14;
 let currentPage='home',currentProviderTab='ollama',currentVoiceEngine='system';
 let availableMics=[],pendingTranscript='';
-let liveRecognition=null,wakeRecognition=null,wakeListening=false;
-let latestTranscriptConfidence=null,lastVoiceCommand='';
-let wakeCommandProcess=null,wakeCommandPoll=null,wakeCommandFile='',wakeCommandLastText='';
-let wakeStreamProcess=null,wakeStreamBuffer='';
+let lastVoiceCommand='';
 let wakeMonitorStream=null,wakeMonitorContext=null,wakeMonitorSource=null,wakeMonitorProcessor=null,wakeMonitorSilencer=null;
 let wakeMonitorChunks=[],wakeMonitorSpeechMs=0,wakeMonitorSilenceMs=0,wakeMonitorHeardSpeech=false,wakeMonitorTranscribing=false;
-let micInputSnapshot='',liveInterimText='';
+let micInputSnapshot='';
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -385,73 +382,11 @@ function getNoisePresetConstraints(){
   }
 }
 
-function getSpeechRecognitionCtor(){
-  return window.SpeechRecognition||window.webkitSpeechRecognition||null;
-}
-
-function getLiveRecognitionLang(){
-  if(cfg.sttBilingualBias==='hi-en') return 'hi-IN';
-  if(cfg.sttLanguage==='hi') return 'hi-IN';
-  if(cfg.sttLanguage==='en') return 'en-US';
-  return 'en-IN';
-}
-
 function getWhisperCommandLang(){
   if(cfg.sttBilingualBias==='hi-en') return 'auto';
   if(cfg.sttLanguage==='hi') return 'hi';
   if(cfg.sttLanguage==='en') return 'en';
   return 'auto';
-}
-
-function updateConfidenceUI(conf){
-  latestTranscriptConfidence=Number.isFinite(conf)?conf:null;
-  const label=document.getElementById('stt-confidence-text');
-  if(label) label.textContent=latestTranscriptConfidence!=null?`${Math.round(latestTranscriptConfidence*100)}%`: 'n/a';
-}
-
-function applyLiveTranscriptToInput(text){
-  const inp=document.getElementById('chat-input');
-  if(!inp) return;
-  const prefix=micInputSnapshot?`${micInputSnapshot} `:'';
-  inp.value=(prefix+text).trim();
-  inp.style.height='auto';
-  inp.style.height=Math.min(inp.scrollHeight,100)+'px';
-}
-
-function startLiveRecognition(){
-  stopLiveRecognition();
-  const Ctor=getSpeechRecognitionCtor();
-  if(!Ctor) { updateConfidenceUI(null); return; }
-  liveRecognition=new Ctor();
-  liveRecognition.continuous=true;
-  liveRecognition.interimResults=true;
-  liveRecognition.lang=getLiveRecognitionLang();
-  liveRecognition.onresult=e=>{
-    let interim='';
-    let bestConfidence=null;
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      const result=e.results[i];
-      const alt=result[0];
-      if(!alt) continue;
-      if(typeof alt.confidence==='number') bestConfidence=Math.max(bestConfidence??0,alt.confidence);
-      interim+=alt.transcript||'';
-    }
-    updateConfidenceUI(bestConfidence);
-    if(interim.trim()){
-      liveInterimText=interim.trim();
-      applyLiveTranscriptToInput(liveInterimText);
-      showInterim(`Live: ${liveInterimText}`);
-    }
-  };
-  liveRecognition.onerror=()=>{};
-  liveRecognition.onend=()=>{liveRecognition=null;};
-  try{liveRecognition.start();}catch{}
-}
-
-function stopLiveRecognition(){
-  try{liveRecognition?.stop?.();}catch{}
-  liveRecognition=null;
-  liveInterimText='';
 }
 
 function normalizeVoiceText(text){
@@ -633,9 +568,6 @@ function handleVoiceTranscript(text,meta={}){
 }
 
 function stopWakeWordListener(){
-  wakeListening=false;
-  try{wakeRecognition?.stop?.();}catch{}
-  wakeRecognition=null;
   if(wakeMonitorProcessor) wakeMonitorProcessor.onaudioprocess=null;
   wakeMonitorSource?.disconnect?.();
   wakeMonitorProcessor?.disconnect?.();
@@ -652,55 +584,6 @@ function stopWakeWordListener(){
   wakeMonitorSilenceMs=0;
   wakeMonitorHeardSpeech=false;
   wakeMonitorTranscribing=false;
-  if(wakeStreamProcess && !wakeStreamProcess.killed){
-    try{wakeStreamProcess.kill();}catch{}
-  }
-  wakeStreamProcess=null;
-  wakeStreamBuffer='';
-  if(wakeCommandPoll){ clearInterval(wakeCommandPoll); wakeCommandPoll=null; }
-  if(wakeCommandProcess && !wakeCommandProcess.killed){
-    try{wakeCommandProcess.kill();}catch{}
-  }
-  wakeCommandProcess=null;
-  wakeCommandFile='';
-  wakeCommandLastText='';
-}
-
-function pollWakeCommandFile(){
-  if(!wakeCommandFile || !fs.existsSync(wakeCommandFile)) return;
-  try{
-    const text=fs.readFileSync(wakeCommandFile,'utf8').trim();
-    if(!text || text===wakeCommandLastText) return;
-    wakeCommandLastText=text;
-    const cleaned=stripWakePhrase(text);
-    updateConfidenceUI(null);
-    if(!cleaned){
-      playWakeCue();
-      showInterim('Wake word detected. Listening...');
-      stopWakeWordListener();
-      setTimeout(()=>startListening(),120);
-      return;
-    }
-    playWakeCue();
-    showInterim(`Heard: ${cleaned}`);
-    const consumed=handleVoiceTranscript(cleaned,{skipWake:true,applyToInput:true});
-    if(cfg.sttMode==='chat' && !consumed){
-      const inp=document.getElementById('chat-input');
-      if(inp){
-        inp.value=cleaned;
-        inp.style.height='auto';
-        inp.style.height=Math.min(inp.scrollHeight,100)+'px';
-      }
-      hideTranscriptPreview(true);
-      setTimeout(()=>send(),120);
-    }
-  }catch{}
-}
-
-function shouldIgnoreWakeLine(text){
-  return !text
-    || /whisper_|init:|SDL_main:|capture device|processing|loading model|always-prompt/i.test(text)
-    || /^\[[^\]]+\]$/.test(text);
 }
 
 function wakeDebug(){}
@@ -776,27 +659,6 @@ async function flushWakeMonitor(){
   }
 }
 
-function handleWakeStreamChunk(chunk){
-  const incoming=String(chunk||'').replace(/\u001b\[[0-9;]*[A-Za-z]/g,'');
-  if(incoming.trim()) wakeDebug('chunk', incoming.trim());
-  wakeStreamBuffer += incoming;
-  const parts=wakeStreamBuffer.split(/[\r\n]+/);
-  wakeStreamBuffer = parts.pop() || '';
-  for(const raw of parts){
-    const line=raw.trim();
-    if(shouldIgnoreWakeLine(line)) continue;
-    wakeDebug('line', line);
-    if(isWakeMatch(line)){
-      triggerWakeListening();
-      return;
-    } 
-  }
-  if(wakeStreamBuffer.trim()) wakeDebug('partial', wakeStreamBuffer.trim());
-  if(isWakeMatch(wakeStreamBuffer)){
-    triggerWakeListening();
-  }
-}
-
 async function setupWakeWordListener(){
   stopWakeWordListener();
   if(!cfg.sttEnabled || !cfg.wakeWordEnabled || isListening) return;
@@ -818,7 +680,6 @@ async function setupWakeWordListener(){
     wakeMonitorProcessor=wakeMonitorContext.createScriptProcessor(4096,1,1);
     wakeMonitorSilencer=wakeMonitorContext.createGain();
     wakeMonitorSilencer.gain.value=0;
-    wakeListening=true;
     wakeMonitorProcessor.onaudioprocess=e=>{
       if(!cfg.wakeWordEnabled || isListening || wakeMonitorTranscribing) return;
       const input=e.inputBuffer.getChannelData(0);
@@ -1161,18 +1022,6 @@ function getEffectiveWhisperPaths(){
   return { exe:configuredExe, model:configuredModel, source:'missing' };
 }
 
-function getEffectiveWhisperCommandPath(){
-  const { exe }=getEffectiveWhisperPaths();
-  if(!exe) return '';
-  return exe.replace(/whisper-cli\.exe$/i,'whisper-command.exe');
-}
-
-function getEffectiveWhisperStreamPath(){
-  const { exe }=getEffectiveWhisperPaths();
-  if(!exe) return '';
-  return exe.replace(/whisper-cli\.exe$/i,'whisper-stream.exe');
-}
-
 function showInterim(text){
   const el=document.getElementById('mic-interim');
   if(!el)return;
@@ -1246,160 +1095,6 @@ function cancelTranscription(){
   setTranscribingUI(false);
   showInterim('Transcription canceled');
   setTimeout(()=>showInterim(''),2000);
-}
-
-function updateWhisperKeyStatus(){
-  const dot=document.getElementById('whisper-key-dot');
-  const txt=document.getElementById('whisper-key-status');
-  if(!dot||!txt)return;
-  const key=getWhisperKey();
-  if(key){
-    dot.className='status-dot green';
-    txt.textContent='✓ OpenAI key found — Whisper STT is ready';
-    txt.style.color='var(--green)';
-  }else{
-    dot.className='status-dot grey';
-    txt.textContent='No OpenAI key — add one in AI Model → OpenAI tab';
-    txt.style.color='var(--muted)';
-  }
-}
-
-function updateMicTimer(){
-  recordingSeconds++;
-  const m=Math.floor(recordingSeconds/60).toString().padStart(2,'0');
-  const s=(recordingSeconds%60).toString().padStart(2,'0');
-  showInterim(`🔴 Recording ${m}:${s} — click mic again to transcribe`);
-}
-
-function setupMic(){
-  const btn=document.getElementById('mic-btn');
-  if(!cfg.sttEnabled){
-    btn.classList.remove('active-display');
-    if(isListening) stopListening(false);
-    return;
-  }
-  btn.classList.add('active-display');
-  btn.title='Click to start recording • click again to send';
-}
-
-async function startListening(){
-  if(isListening)return;
-
-  const key=getWhisperKey();
-  if(!key){
-    showInterim('⚠️ No OpenAI key — add one in AI Model → OpenAI tab');
-    setTimeout(()=>showInterim(''),3500);
-    return;
-  }
-
-  try{
-    micStream=await navigator.mediaDevices.getUserMedia({
-      audio:{channelCount:1,sampleRate:16000,echoCancellation:true,noiseSuppression:true}
-    });
-  }catch(err){
-    console.error('[Whisper STT] Mic access denied:',err);
-    showInterim('⚠️ Mic access denied — check Windows Settings › Privacy › Microphone');
-    setTimeout(()=>showInterim(''),4000);
-    return;
-  }
-
-  // Pick the best supported audio format Whisper accepts
-  const mimeType=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg']
-    .find(t=>MediaRecorder.isTypeSupported(t))||'';
-
-  audioChunks     = [];
-  recordingSeconds = 0;
-  mediaRecorder   = new MediaRecorder(micStream, mimeType?{mimeType}:{});
-  isListening     = true;
-
-  mediaRecorder.ondataavailable=e=>{
-    if(e.data&&e.data.size>0) audioChunks.push(e.data);
-  };
-
-  mediaRecorder.onstop=async()=>{
-    clearInterval(recordingTimer);
-    showInterim('⏳ Transcribing…');
-    const blob=new Blob(audioChunks,{type:mimeType||'audio/webm'});
-    await transcribeWithWhisper(blob);
-    micStream?.getTracks().forEach(t=>t.stop());
-    micStream=null;
-  };
-
-  mediaRecorder.start(250); // collect in 250 ms chunks
-
-  const btn=document.getElementById('mic-btn');
-  btn.classList.add('listening');
-  recordingTimer=setInterval(updateMicTimer,1000);
-  showInterim('🔴 Recording 00:00 — click mic again to transcribe');
-}
-
-function stopListening(sendAudio=true){
-  clearInterval(recordingTimer);
-  isListening=false;
-  document.getElementById('mic-btn')?.classList.remove('listening');
-
-  if(!sendAudio){
-    showInterim('');
-    micStream?.getTracks().forEach(t=>t.stop());
-    micStream=null;audioChunks=[];mediaRecorder=null;
-    return;
-  }
-
-  if(mediaRecorder&&mediaRecorder.state!=='inactive'){
-    mediaRecorder.stop(); // triggers onstop → transcribeWithWhisper
-  }else{
-    showInterim('');
-  }
-}
-
-async function transcribeWithWhisper(audioBlob){
-  const key=getWhisperKey();
-  if(!key){showInterim('');return;}
-
-  const ext=audioBlob.type.includes('ogg')?'ogg':audioBlob.type.includes('mp4')?'mp4':'webm';
-  const form=new FormData();
-  form.append('file',audioBlob,`recording.${ext}`);
-  form.append('model','whisper-1');
-  form.append('response_format','json');
-  // Remove the next line to enable auto-detect for any language:
-  form.append('language','en');
-
-  try{
-    const res=await fetch('https://api.openai.com/v1/audio/transcriptions',{
-      method:'POST',
-      headers:{Authorization:`Bearer ${key}`},
-      body:form,
-    });
-
-    if(!res.ok){
-      const errText=await res.text();
-      throw new Error(`Whisper ${res.status}: ${errText}`);
-    }
-
-    const data=await res.json();
-    const text=(data.text||'').trim();
-
-    if(text){
-      const inp=document.getElementById('chat-input');
-      inp.value=(inp.value?inp.value+' ':'')+text;
-      inp.style.height='auto';
-      inp.style.height=Math.min(inp.scrollHeight,100)+'px';
-      const preview=text.length>60?text.slice(0,60)+'…':text;
-      showInterim(`✅ "${preview}"`);
-      setTimeout(()=>showInterim(''),2500);
-    }else{
-      showInterim('🔇 Nothing detected — try again');
-      setTimeout(()=>showInterim(''),2500);
-    }
-  }catch(err){
-    console.error('[Whisper STT]',err);
-    const msg=err.message.includes('401')?'⚠️ Invalid API key — check AI Model settings'
-             :err.message.includes('429')?'⚠️ Rate limit hit — try again in a moment'
-             :err.message.includes('fetch')||err.message.includes('network')?'⚠️ No internet connection'
-             :`⚠️ ${err.message.slice(0,70)}`;
-    showInterim(msg);
-    setTimeout(()=>showInterim(''),4000);
-  }
 }
 
 function updateSTTUI(){
@@ -1655,7 +1350,6 @@ async function startListening(){
   hideTranscriptPreview(true);
   setTranscribingUI(false);
   micInputSnapshot=document.getElementById('chat-input')?.value.trim()||'';
-  liveInterimText='';
   try{
     micStream=await navigator.mediaDevices.getUserMedia({
       audio:{
