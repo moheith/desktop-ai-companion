@@ -9,6 +9,12 @@
   "build": {
     "appId": "com.you.desktop-mascot",
     "productName": "Desktop Mascot",
+    "extraResources": [
+      {
+        "from": "mic",
+        "to": "mic"
+      }
+    ],
     "win": {
       "target": "nsis"
     }

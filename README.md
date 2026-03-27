@@ -121,6 +121,8 @@ mic\whisper-bin-x64\Release\models\ggml-base.bin
 
 7. Save Voice Settings
 
+For packaged builds in `dist/`, the app now copies the `mic/` runtime into the packaged app resources automatically. After rebuilding, local STT should work from the packaged `.exe` without needing a dev-only relative path.
+
 ### OpenAI Whisper
 
 If you prefer cloud transcription:

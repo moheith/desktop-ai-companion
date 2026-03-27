@@ -570,6 +570,38 @@ function getSTTLanguage(){
   return cfg.sttLanguage || 'auto';
 }
 
+function resolveConfiguredPath(rawPath){
+  const value=(rawPath||'').trim();
+  if(!value) return '';
+  return path.isAbsolute(value)?value:path.resolve(value);
+}
+
+function getBundledWhisperPaths(){
+  const roots=[];
+  if(typeof process!=='undefined'){
+    if(process.resourcesPath) roots.push(path.join(process.resourcesPath,'mic','whisper-bin-x64','Release'));
+    roots.push(path.join(process.cwd(),'mic','whisper-bin-x64','Release'));
+    roots.push(path.join(__dirname,'mic','whisper-bin-x64','Release'));
+  }
+  for(const root of roots){
+    const exe=path.join(root,'whisper-cli.exe');
+    const model=path.join(root,'models','ggml-base.bin');
+    if(fs.existsSync(exe) && fs.existsSync(model)) return { exe, model };
+  }
+  return { exe:'', model:'' };
+}
+
+function getEffectiveWhisperPaths(){
+  const configuredExe=resolveConfiguredPath(cfg.whisperCppPath);
+  const configuredModel=resolveConfiguredPath(cfg.whisperCppModel);
+  if(configuredExe && configuredModel && fs.existsSync(configuredExe) && fs.existsSync(configuredModel)){
+    return { exe:configuredExe, model:configuredModel, source:'configured' };
+  }
+  const bundled=getBundledWhisperPaths();
+  if(bundled.exe && bundled.model) return { ...bundled, source:'bundled' };
+  return { exe:configuredExe, model:configuredModel, source:'missing' };
+}
+
 function showInterim(text){
   const el=document.getElementById('mic-interim');
   if(!el)return;
@@ -741,9 +773,12 @@ function updateSTTUI(){
   if(localBox) localBox.style.display=engine==='local'?'block':'none';
   if(!dot||!txt)return;
   if(engine==='local'){
-    const ready=!!(cfg.whisperCppPath&&cfg.whisperCppModel);
+    const resolved=getEffectiveWhisperPaths();
+    const ready=!!(resolved.exe&&resolved.model&&fs.existsSync(resolved.exe)&&fs.existsSync(resolved.model));
     dot.className=`status-dot ${ready?'green':'yellow'}`;
-    txt.textContent=ready?'Local whisper.cpp is configured':'Add whisper.cpp executable and model path below';
+    txt.textContent=ready
+      ? (resolved.source==='bundled'?'Bundled whisper.cpp is ready':'Local whisper.cpp is configured')
+      : 'Add whisper.cpp executable and model path below';
     txt.style.color=ready?'var(--green)':'var(--yellow)';
     return;
   }
@@ -760,7 +795,8 @@ function updateSTTUI(){
 
 function ensureSTTConfigured(){
   if(getSTTEngine()==='local'){
-    if(cfg.whisperCppPath&&cfg.whisperCppModel) return true;
+    const resolved=getEffectiveWhisperPaths();
+    if(resolved.exe&&resolved.model&&fs.existsSync(resolved.exe)&&fs.existsSync(resolved.model)) return true;
     showInterim('Add whisper.cpp executable and model path in Voice Settings');
     setTimeout(()=>showInterim(''),4000);
     return false;
@@ -882,8 +918,7 @@ async function transcribeWithOpenAI(audioBlob){
 }
 
 async function transcribeWithWhisperCpp(audioBlob){
-  const exe=(cfg.whisperCppPath||'').trim();
-  const model=(cfg.whisperCppModel||'').trim();
+  const { exe, model }=getEffectiveWhisperPaths();
   if(!exe||!model){
     showInterim('Add whisper.cpp executable and model path first');
     setTimeout(()=>showInterim(''),4000);
