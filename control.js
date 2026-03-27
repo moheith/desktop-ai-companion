@@ -58,6 +58,12 @@ let cfg={
   micDeviceId:'',sttSilenceTimeoutMs:1600,sttSensitivity:0.014,
   sttHoldToTalk:false,wakeWordEnabled:false,wakeWordPhrase:'hey mascot',
   sttBilingualBias:'off',sttNoisePreset:'medium',sttMode:'chat',
+  wakeWordAliases:'hi mascot, hey buddy',
+  wakeFollowupEnabled:true,wakeFollowupMs:12000,wakeListenAfterReply:true,
+  wakeSensitivity:0.010,wakeSpeechWindowMs:2200,wakeSilenceMs:420,
+  voiceHudEnabled:true,voiceInterruptEnabled:true,
+  voiceIntentRouting:'hybrid',voiceConfirmActions:true,
+  voiceCommandTraining:'',ambientNoiseFloor:0,
   micProfiles:{},
   elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
   piperPath:'',piperVoice:'',
@@ -76,6 +82,7 @@ let lastVoiceCommand='';
 let wakeMonitorStream=null,wakeMonitorContext=null,wakeMonitorSource=null,wakeMonitorProcessor=null,wakeMonitorSilencer=null;
 let wakeMonitorChunks=[],wakeMonitorSpeechMs=0,wakeMonitorSilenceMs=0,wakeMonitorHeardSpeech=false,wakeMonitorTranscribing=false;
 let micInputSnapshot='';
+let lastVoiceIntent=null,voiceSessionUntil=0,voiceSessionPrimed=false,voiceListeningMode='manual',wakeResumeTimer=null;
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -119,6 +126,7 @@ function applyConfig(){
   ck('tog-stt-hold',!!cfg.sttHoldToTalk);
   ck('tog-stt-wake',!!cfg.wakeWordEnabled);
   setEl('stt-wake-word',cfg.wakeWordPhrase||'hey mascot');
+  setEl('stt-wake-aliases',cfg.wakeWordAliases||'');
   setEl('stt-bilingual-bias',cfg.sttBilingualBias||'off');
   setEl('stt-noise-preset',cfg.sttNoisePreset||'medium');
   setEl('stt-mode',cfg.sttMode||'chat');
@@ -126,6 +134,19 @@ function applyConfig(){
   tv('stt-silence-timeout-val',`${Math.round((cfg.sttSilenceTimeoutMs||1600)/100)/10}s`);
   setEl('stt-sensitivity',cfg.sttSensitivity||0.014);
   tv('stt-sensitivity-val',Number(cfg.sttSensitivity||0.014).toFixed(3));
+  setEl('wake-sensitivity',cfg.wakeSensitivity||0.010);
+  tv('wake-sensitivity-val',Number(cfg.wakeSensitivity||0.010).toFixed(3));
+  setEl('wake-window-ms',cfg.wakeSpeechWindowMs||2200);
+  tv('wake-window-ms-val',`${Math.round((cfg.wakeSpeechWindowMs||2200)/100)/10}s`);
+  setEl('wake-followup-ms',cfg.wakeFollowupMs||12000);
+  tv('wake-followup-ms-val',`${Math.round((cfg.wakeFollowupMs||12000)/1000)}s`);
+  ck('tog-wake-followup',cfg.wakeFollowupEnabled!==false);
+  ck('tog-wake-listen-reply',cfg.wakeListenAfterReply!==false);
+  ck('tog-voice-hud',cfg.voiceHudEnabled!==false);
+  ck('tog-voice-interrupt',cfg.voiceInterruptEnabled!==false);
+  ck('tog-voice-confirm',cfg.voiceConfirmActions!==false);
+  setEl('voice-intent-routing',cfg.voiceIntentRouting||'hybrid');
+  setEl('voice-command-training',cfg.voiceCommandTraining||'');
   applyDeviceProfile(cfg.micDeviceId||'',false);
   setEl('eleven-key',cfg.elevenKey);setEl('eleven-model',cfg.elevenModel);
   setEl('piper-path',cfg.piperPath);setEl('piper-voice',cfg.piperVoice);
@@ -162,6 +183,7 @@ function applyConfig(){
   // STT
   setupMic();
   updateSTTUI();
+  updateVoiceDashboard();
   loadMicDevices();
   setupWakeWordListener();
 }
@@ -393,23 +415,80 @@ function normalizeVoiceText(text){
   return (text||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim();
 }
 
+function getWakePhrases(){
+  const primary=(cfg.wakeWordPhrase||'hey mascot').trim();
+  const aliases=String(cfg.wakeWordAliases||'')
+    .split(/[\n,]+/)
+    .map(s=>s.trim())
+    .filter(Boolean);
+  return [...new Set([primary,...aliases].filter(Boolean))];
+}
+
+function isFollowupWindowActive(){
+  return cfg.wakeFollowupEnabled!==false && Date.now()<voiceSessionUntil;
+}
+
+function startVoiceSession(){
+  voiceSessionUntil=Date.now()+(cfg.wakeFollowupMs||12000);
+  voiceSessionPrimed=true;
+  setVoiceHud('followup',`Follow-up window ${Math.round((cfg.wakeFollowupMs||12000)/1000)}s`);
+}
+
+function clearVoiceSession(){
+  voiceSessionUntil=0;
+  voiceSessionPrimed=false;
+}
+
+function setVoiceHud(state,text=''){
+  const hud=document.getElementById('voice-hud');
+  const label=document.getElementById('voice-hud-text');
+  if(!hud) return;
+  tv('voice-metric-runtime',text||'Idle');
+  if(cfg.voiceHudEnabled===false){
+    hud.classList.remove('active');
+    hud.dataset.state='idle';
+    return;
+  }
+  hud.dataset.state=state||'idle';
+  hud.classList.toggle('active',!!text);
+  if(label) label.textContent=text;
+}
+
+function clearVoiceHud(delay=0){
+  const run=()=>setVoiceHud('idle','');
+  if(delay>0) setTimeout(run,delay);
+  else run();
+}
+
+function queueWakeResume(delay=0){
+  clearTimeout(wakeResumeTimer);
+  wakeResumeTimer=setTimeout(()=>{
+    if(cfg.wakeWordEnabled && !isListening) setupWakeWordListener();
+  },delay);
+}
+
 function extractWakePayload(text){
   const normalized=normalizeVoiceText(text);
-  const wake=normalizeVoiceText(cfg.wakeWordPhrase||'hey mascot');
-  if(!wake) return text.trim();
-  const idx=normalized.indexOf(wake);
-  if(idx===-1) return '';
-  const after=normalized.slice(idx+wake.length).trim();
-  return after || '__wake__';
+  for(const phrase of getWakePhrases()){
+    const wake=normalizeVoiceText(phrase);
+    if(!wake) continue;
+    const idx=normalized.indexOf(wake);
+    if(idx===-1) continue;
+    const after=normalized.slice(idx+wake.length).trim();
+    return after || '__wake__';
+  }
+  return '';
 }
 
 function stripWakePhrase(text){
   const raw=(text||'').trim();
   if(!cfg.wakeWordEnabled) return raw;
-  const wake=(cfg.wakeWordPhrase||'').trim();
-  if(!wake) return raw;
-  const escaped=wake.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  return raw.replace(new RegExp(`^\\s*${escaped}[\\s,.:;-]*`,'i'),'').trim();
+  let cleaned=raw;
+  getWakePhrases().forEach(phrase=>{
+    const escaped=phrase.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    cleaned=cleaned.replace(new RegExp(`^\\s*${escaped}[\\s,.:;-]*`,'i'),'').trim();
+  });
+  return cleaned;
 }
 
 function voiceHasAny(text,phrases){
@@ -482,60 +561,213 @@ function inferVoiceRoute(text){
   return match?match.target:'';
 }
 
-function executeVoiceCommand(rawText){
+function getTrainedVoiceCommands(){
+  return String(cfg.voiceCommandTraining||'')
+    .split('\n')
+    .map(line=>line.trim())
+    .filter(Boolean)
+    .map(line=>{
+      const [phrase,target='']=line.split('=>').map(s=>s.trim());
+      return phrase&&target?{phrase:normalizeVoiceText(phrase),target:normalizeVoiceText(target)}:null;
+    })
+    .filter(Boolean);
+}
+
+function trainedCommandIntent(text){
+  for(const item of getTrainedVoiceCommands()){
+    if(text.includes(item.phrase)) return { action:'trained', target:item.target };
+  }
+  return null;
+}
+
+function buildHeuristicIntent(rawText){
   const text=normalizeVoiceText(rawText);
-  if(!text) return false;
+  if(!text) return null;
   lastVoiceCommand=text;
   const hideAction=voiceHasAny(text,['hide','close','turn off','disable','remove']);
   const showAction=voiceHasAny(text,['show','open','turn on','enable','bring back']);
   const openAction=voiceHasAny(text,['open','show','go to','take me to','switch to','navigate to']);
   const stopAction=voiceHasAny(text,['stop listening','cancel listening','stop recording','cancel recording','stop voice']);
 
-  if(stopAction){ stopListening(false); return true; }
+  if(stopAction) return { action:'stop_listening' };
+
+  if(cfg.voiceInterruptEnabled!==false && (voiceHasAny(text,['stop talking','stop speaking','be quiet','quiet']) || text==='stop')){
+    return { action:'stop_tts' };
+  }
 
   if(voiceHasAny(text,['mascot chupa do','character chupa do']) || (hideAction && voiceHasAny(text,['mascot','character','avatar','girl']))){
-    setMascotVisibility(false);
-    return true;
+    return { action:'set_mascot_visibility', value:false };
   }
   if(voiceHasAny(text,['mascot dikhao','character dikhao']) || (showAction && voiceHasAny(text,['mascot','character','avatar','girl']))){
-    setMascotVisibility(true);
-    return true;
+    return { action:'set_mascot_visibility', value:true };
   }
 
   if((showAction && voiceHasAny(text,['click through','clickthrough','mouse pass through'])) || /let clicks pass/i.test(rawText)){
-    setClickThroughState(true);
-    return true;
+    return { action:'set_click_through', value:true };
   }
   if((hideAction && voiceHasAny(text,['click through','clickthrough','mouse pass through'])) || /stop clicks passing/i.test(rawText)){
-    setClickThroughState(false);
-    return true;
+    return { action:'set_click_through', value:false };
   }
 
   if((showAction && voiceHasAny(text,['border','outline','frame']))){
-    setBorderState(true);
-    return true;
+    return { action:'set_border', value:true };
   }
   if((hideAction && voiceHasAny(text,['border','outline','frame']))){
-    setBorderState(false);
-    return true;
+    return { action:'set_border', value:false };
   }
+
+  if(voiceHasAny(text,['always on top','stay on top','pin yourself'])){
+    return { action:'set_always_on_top', value:!hideAction };
+  }
+
+  if(voiceHasAny(text,['behind taskbar','go behind windows','stay in background'])){
+    return { action:'set_behind_taskbar', value:!hideAction };
+  }
+
+  if(voiceHasAny(text,['be smaller','get smaller','shrink'])) return { action:'scale_mascot', delta:-0.03 };
+  if(voiceHasAny(text,['be bigger','get bigger','grow'])) return { action:'scale_mascot', delta:0.03 };
+  if(voiceHasAny(text,['move left'])) return { action:'move_mascot', dx:-25, dy:0 };
+  if(voiceHasAny(text,['move right'])) return { action:'move_mascot', dx:25, dy:0 };
+  if(voiceHasAny(text,['move up'])) return { action:'move_mascot', dx:0, dy:-25 };
+  if(voiceHasAny(text,['move down'])) return { action:'move_mascot', dx:0, dy:25 };
+
+  if(voiceHasAny(text,['clear memory','reset memory','erase memory'])) return { action:'clear_memory', confirm:true };
+  if(voiceHasAny(text,['clear chat','erase chat','reset chat'])) return { action:'clear_chat', confirm:true };
+  if(voiceHasAny(text,['calibrate microphone','calibrate mic','calibrate noise'])) return { action:'calibrate_noise' };
+
+  const trained=trainedCommandIntent(text);
+  if(trained) return trained;
 
   if(openAction || /kholo|dikhao|jao/.test(text)){
     const route=inferVoiceRoute(text);
-    if(route) return openVoiceRoute(route);
-    if(voiceHasAny(text,['settings','control panel'])) return openVoiceRoute('voice');
+    if(route) return { action:'open_route', target:route };
+    if(voiceHasAny(text,['settings','control panel'])) return { action:'open_route', target:'voice' };
   }
 
-  if(voiceHasAny(text,['go home','switch home','back home','home page'])) return openVoiceRoute('home');
-
-  return false;
+  if(voiceHasAny(text,['go home','switch home','back home','home page'])) return { action:'open_route', target:'home' };
+  return null;
 }
 
-function handleVoiceTranscript(text,meta={}){
+async function inferVoiceIntent(rawText){
+  const heuristic=buildHeuristicIntent(rawText);
+  if(heuristic || cfg.voiceIntentRouting==='off') return heuristic;
+  if(cfg.voiceIntentRouting==='rules') return null;
+  try{
+    const prompt=`Return strict JSON only. Interpret this voice command for a desktop mascot app.
+Allowed actions: open_route, set_mascot_visibility, set_click_through, set_border, set_always_on_top, set_behind_taskbar, move_mascot, scale_mascot, stop_tts, stop_listening, clear_memory, clear_chat, none.
+For open_route target can be: home, chat, ai, openai, anthropic, gemini, ollama, nvidia, custom, voice, memory, looks, mascot.
+For booleans use value true/false. For move use dx and dy integers. For scale use delta number.
+If the command is conversational and not a device command, return {"action":"none"}.
+Command: ${rawText}`;
+    let out='';
+    for await (const token of streamForProvider([{role:'user',content:prompt}], true)) out+=token;
+    const match=out.match(/\{[\s\S]*\}/);
+    if(!match) return null;
+    const parsed=JSON.parse(match[0]);
+    return parsed?.action && parsed.action!=='none' ? parsed : null;
+  }catch{
+    return null;
+  }
+}
+
+function describeIntent(intent){
+  switch(intent?.action){
+    case 'open_route': return `Open ${intent.target}`;
+    case 'set_mascot_visibility': return intent.value?'Show mascot':'Hide mascot';
+    case 'set_click_through': return intent.value?'Enable click through':'Disable click through';
+    case 'set_border': return intent.value?'Show border':'Hide border';
+    case 'set_always_on_top': return intent.value?'Keep mascot on top':'Stop keeping mascot on top';
+    case 'set_behind_taskbar': return intent.value?'Send mascot behind taskbar':'Bring mascot out of background';
+    case 'clear_memory': return 'Clear all memory';
+    case 'clear_chat': return 'Clear chat history';
+    case 'calibrate_noise': return 'Calibrate microphone';
+    default: return 'Run voice action';
+  }
+}
+
+function intentNeedsConfirmation(intent){
+  return cfg.voiceConfirmActions!==false && !!intent?.confirm;
+}
+
+function executeResolvedIntent(intent){
+  if(!intent?.action) return false;
+  switch(intent.action){
+    case 'open_route': return openVoiceRoute(intent.target);
+    case 'set_mascot_visibility': setMascotVisibility(!!intent.value); return true;
+    case 'set_click_through': setClickThroughState(!!intent.value); return true;
+    case 'set_border': setBorderState(!!intent.value); return true;
+    case 'set_always_on_top':
+      cfg.alwaysOnTop=!!intent.value;
+      if(intent.value){ cfg.behindTaskbar=false; ck('tog-taskbar',false); }
+      ck('tog-ontop',cfg.alwaysOnTop);
+      ipcRenderer.send('toggle-always-on-top',cfg.alwaysOnTop);
+      return true;
+    case 'set_behind_taskbar':
+      cfg.behindTaskbar=!!intent.value;
+      if(intent.value){ cfg.alwaysOnTop=false; ck('tog-ontop',false); }
+      ck('tog-taskbar',cfg.behindTaskbar);
+      ipcRenderer.send('toggle-behind-taskbar',cfg.behindTaskbar);
+      return true;
+    case 'move_mascot':
+      cfg.mascotX=(cfg.mascotX||0)+(intent.dx||0);
+      cfg.mascotY=(cfg.mascotY||0)+(intent.dy||0);
+      ipcRenderer.send('preview-position',{x:cfg.mascotX,y:cfg.mascotY});
+      return true;
+    case 'scale_mascot':
+      cfg.scale=Math.max(0.08,Math.min(1.2,(cfg.scale||0.25)+(intent.delta||0)));
+      ipcRenderer.send('preview-scale',{scale:cfg.scale});
+      setEl('scale-slider',cfg.scale);
+      tv('scale-val',cfg.scale.toFixed(2));
+      return true;
+    case 'stop_tts': stopTTS(); showToast('Voice stopped'); return true;
+    case 'stop_listening': stopListening(false); return true;
+    case 'clear_memory':
+      mem={userName:'',userFacts:[],personality:'',convoSummaries:[],totalMessages:0,currentMood:'neutral',memoryFeed:[]};
+      ipcRenderer.send('memory-clear-all');setEl('mem-name','');setEl('mem-personality','');renderMemoryPage(); return true;
+    case 'clear_chat':
+      ipcRenderer.send('clear-chat-history'); return true;
+    case 'calibrate_noise':
+      calibrateAmbientNoise(); return true;
+    case 'trained':
+      return executeResolvedIntent(buildHeuristicIntent(intent.target) || { action:'open_route', target:intent.target });
+    default:
+      return false;
+  }
+}
+
+async function executeVoiceCommand(rawText){
+  const intent=await inferVoiceIntent(rawText);
+  if(!intent) return false;
+  if(intentNeedsConfirmation(intent)){
+    lastVoiceIntent=intent;
+    const desc=describeIntent(intent);
+    showTranscriptPreview(`Confirm: ${desc}`);
+    showInterim(`Say "confirm" to ${desc.toLowerCase()}`);
+    return true;
+  }
+  return executeResolvedIntent(intent);
+}
+
+async function handleVoiceTranscript(text,meta={}){
   const trimmed=(text||'').trim();
   if(!trimmed) return true;
+  const normalized=normalizeVoiceText(trimmed);
+  if(lastVoiceIntent && /^(confirm|yes|do it|go ahead|haan|han)$/.test(normalized)){
+    const intent=lastVoiceIntent;
+    lastVoiceIntent=null;
+    hideTranscriptPreview(true);
+    showInterim(`Confirmed: ${describeIntent(intent)}`);
+    executeResolvedIntent(intent);
+    return true;
+  }
+  if(lastVoiceIntent && /^(cancel|no|stop|leave it|rehne do)$/.test(normalized)){
+    lastVoiceIntent=null;
+    hideTranscriptPreview(true);
+    showInterim('Canceled command');
+    return true;
+  }
   let payload=trimmed;
-  if(cfg.wakeWordEnabled && !meta.skipWake){
+  if(!meta.skipWake && !isFollowupWindowActive() && cfg.wakeWordEnabled){
     payload=extractWakePayload(trimmed);
     if(!payload) return true;
     if(payload==='__wake__'){
@@ -544,7 +776,7 @@ function handleVoiceTranscript(text,meta={}){
       return true;
     }
   }
-  const commandHandled=executeVoiceCommand(payload);
+  const commandHandled=await executeVoiceCommand(payload);
   if(commandHandled){
     showInterim(`Command: ${payload}`);
     setTimeout(()=>showInterim(''),1800);
@@ -590,20 +822,26 @@ function wakeDebug(){}
 
 function isWakeMatch(text){
   const normalized=normalizeVoiceText(text);
-  const wake=normalizeVoiceText(cfg.wakeWordPhrase||'hey mascot');
-  if(!normalized || !wake) return false;
-  if(normalized.includes(wake)) return true;
+  if(!normalized) return false;
   const compact=normalized.replace(/\s+/g,'');
-  const compactWake=wake.replace(/\s+/g,'');
-  if(compact.includes(compactWake)) return true;
+  for(const phrase of getWakePhrases()){
+    const wake=normalizeVoiceText(phrase);
+    if(!wake) continue;
+    if(normalized.includes(wake)) return true;
+    if(compact.includes(wake.replace(/\s+/g,''))) return true;
+  }
   if(/(?:hey|hi|hay)\s+(?:mascot|maskot|mascut|mascott)/i.test(normalized)) return true;
   return false;
 }
 
 function triggerWakeListening(){
   wakeDebug('triggered');
+  voiceListeningMode='wake';
+  startVoiceSession();
+  if(cfg.voiceInterruptEnabled!==false && ttsBusy) stopTTS();
   playWakeCue();
   showInterim('Wake word detected. Listening...');
+  setVoiceHud('wake','Wake detected. Listening...');
   stopWakeWordListener();
   setTimeout(()=>startListening(),20);
 }
@@ -620,6 +858,22 @@ async function processWakeTranscript(text){
   const heard=(text||'').trim();
   wakeDebug('wake-transcript', heard);
   if(!heard) return;
+  if(isFollowupWindowActive()){
+    voiceListeningMode='followup';
+    showInterim(`Follow-up: ${heard}`);
+    const consumed=await handleVoiceTranscript(heard,{skipWake:true,applyToInput:true});
+    if(cfg.sttMode==='chat' && !consumed){
+      const inp=document.getElementById('chat-input');
+      if(inp){
+        inp.value=heard;
+        inp.style.height='auto';
+        inp.style.height=Math.min(inp.scrollHeight,100)+'px';
+      }
+      hideTranscriptPreview(true);
+      setTimeout(()=>send(),120);
+    }
+    return;
+  }
   if(!isWakeMatch(heard)) return;
   const cleaned=stripWakePhrase(heard);
   if(!cleaned){
@@ -628,7 +882,7 @@ async function processWakeTranscript(text){
   }
   playWakeCue();
   showInterim(`Heard: ${cleaned}`);
-  const consumed=handleVoiceTranscript(cleaned,{skipWake:true,applyToInput:true});
+  const consumed=await handleVoiceTranscript(cleaned,{skipWake:true,applyToInput:true});
   if(cfg.sttMode==='chat' && !consumed){
     const inp=document.getElementById('chat-input');
     if(inp){
@@ -689,18 +943,18 @@ async function setupWakeWordListener(){
       for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
       const rms=Math.sqrt(sum/input.length);
       const chunkMs=(input.length/(wakeMonitorContext?.sampleRate||16000))*1000;
-      const threshold=Math.max(0.008,Math.min((cfg.sttSensitivity||0.014)*0.7,0.02));
+      const threshold=Math.max(0.006,Math.min(cfg.wakeSensitivity||((cfg.sttSensitivity||0.014)*0.7),0.03));
       if(rms>threshold){
         wakeMonitorHeardSpeech=true;
         wakeMonitorSpeechMs+=chunkMs;
         wakeMonitorSilenceMs=0;
       }else if(wakeMonitorHeardSpeech){
         wakeMonitorSilenceMs+=chunkMs;
-        if(wakeMonitorSilenceMs>=420){
+        if(wakeMonitorSilenceMs>=(cfg.wakeSilenceMs||420)){
           flushWakeMonitor();
         }
       }
-      if(wakeMonitorHeardSpeech && wakeMonitorSpeechMs>=2200){
+      if(wakeMonitorHeardSpeech && wakeMonitorSpeechMs>=(cfg.wakeSpeechWindowMs||2200)){
         flushWakeMonitor();
       }
     };
@@ -800,12 +1054,23 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.sttHoldToTalk=document.getElementById('tog-stt-hold')?.checked===true;
   cfg.wakeWordEnabled=document.getElementById('tog-stt-wake')?.checked===true;
   cfg.wakeWordPhrase=(val('stt-wake-word')||'hey mascot').trim();
+  cfg.wakeWordAliases=val('stt-wake-aliases');
   cfg.sttBilingualBias=val('stt-bilingual-bias')||'off';
   cfg.sttNoisePreset=val('stt-noise-preset')||'medium';
   cfg.sttMode=val('stt-mode')||'chat';
   cfg.micDeviceId=val('stt-device');
   cfg.sttSilenceTimeoutMs=parseInt(val('stt-silence-timeout')||'1600',10);
   cfg.sttSensitivity=parseFloat(val('stt-sensitivity')||'0.014');
+  cfg.wakeSensitivity=parseFloat(val('wake-sensitivity')||'0.010');
+  cfg.wakeSpeechWindowMs=parseInt(val('wake-window-ms')||'2200',10);
+  cfg.wakeFollowupEnabled=document.getElementById('tog-wake-followup')?.checked!==false;
+  cfg.wakeFollowupMs=parseInt(val('wake-followup-ms')||'12000',10);
+  cfg.wakeListenAfterReply=document.getElementById('tog-wake-listen-reply')?.checked!==false;
+  cfg.voiceHudEnabled=document.getElementById('tog-voice-hud')?.checked!==false;
+  cfg.voiceInterruptEnabled=document.getElementById('tog-voice-interrupt')?.checked!==false;
+  cfg.voiceConfirmActions=document.getElementById('tog-voice-confirm')?.checked!==false;
+  cfg.voiceIntentRouting=val('voice-intent-routing')||'hybrid';
+  cfg.voiceCommandTraining=val('voice-command-training');
   cfg.elevenKey=val('eleven-key');cfg.elevenModel=val('eleven-model');
   cfg.elevenVoiceId=selectedElevenVoiceId||cfg.elevenVoiceId;
   cfg.piperPath=val('piper-path');cfg.piperVoice=val('piper-voice');
@@ -849,7 +1114,12 @@ function enqueueTTS(text){
 }
 
 function processTTSQueue(){
-  if(!ttsQueue.length){ttsBusy=false;setBadge('');return;}
+  if(!ttsQueue.length){
+    ttsBusy=false;setBadge('');
+    if(isFollowupWindowActive()) setVoiceHud('followup','Ask a follow-up...');
+    else clearVoiceHud(600);
+    return;
+  }
   ttsBusy=true;setBadge('speaking');
   const text=ttsQueue.shift();
   let speak;
@@ -867,11 +1137,13 @@ function stopTTS(){
   ttsQueue=[];ttsBusy=false;setBadge('');
   window.speechSynthesis.cancel();
   if(piperCurrentAudio){try{piperCurrentAudio.pause();}catch(e){}piperCurrentAudio=null;}
+  if(isFollowupWindowActive()) queueWakeResume(150);
 }
 function setBadge(state){
   const b=document.getElementById('tts-badge');if(!b)return;
   b.className=state==='speaking'?'tts-badge speaking':'tts-badge';
   b.textContent=state==='speaking'?'🔊 speaking…':'';
+  if(state==='speaking') setVoiceHud('speaking','Speaking...');
 }
 
 function speakSystem(text){
@@ -1027,11 +1299,19 @@ function showInterim(text){
   if(!el)return;
   el.textContent=text;
   el.classList.toggle('active',!!text);
+  tv('voice-metric-runtime',text?text.replace(/[".]+$/,''):'Idle');
 }
 
 function setListeningVisuals(active){
   document.getElementById('mic-btn')?.classList.toggle('listening',!!active);
   document.getElementById('chat-canvas-wrap')?.classList.toggle('listening',!!active);
+}
+
+function updateVoiceDashboard(){
+  tv('voice-metric-engine',getSTTEngine()==='local'?'Local whisper.cpp':'OpenAI Whisper');
+  tv('voice-metric-wake',cfg.wakeWordEnabled?`On · ${cfg.wakeWordPhrase||'hey mascot'}`:'Off');
+  tv('voice-metric-routing',(cfg.voiceIntentRouting||'hybrid').replace(/^./,c=>c.toUpperCase()));
+  if(cfg.voiceHudEnabled===false) document.getElementById('voice-hud')?.classList.remove('active');
 }
 
 function playWakeCue(){
@@ -1109,6 +1389,7 @@ function updateSTTUI(){
   if(localBox) localBox.style.display=engine==='local'?'block':'none';
   if(modeChip) modeChip.textContent=`mode: ${cfg.sttMode||'chat'}`;
   if(wakeChip) wakeChip.textContent=`wake word: ${cfg.wakeWordEnabled?(cfg.wakeWordPhrase||'on'):'off'}`;
+  updateVoiceDashboard();
   if(!dot||!txt)return;
   if(engine==='local'){
     const resolved=getEffectiveWhisperPaths();
@@ -1202,18 +1483,73 @@ function makeWavBlob(chunks,sampleRate){
   return new Blob([buffer],{type:'audio/wav'});
 }
 
-function applyTranscribedText(text){
+async function calibrateAmbientNoise(){
+  if(isListening) return;
+  setVoiceHud('calibrating','Calibrating microphone...');
+  showInterim('Stay quiet for 3 seconds to calibrate');
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({
+      audio:{
+        deviceId:cfg.micDeviceId?{exact:cfg.micDeviceId}:undefined,
+        channelCount:1,
+        ...getNoisePresetConstraints()
+      }
+    });
+    const AC=window.AudioContext||window.webkitAudioContext;
+    const context=new AC({sampleRate:16000});
+    const source=context.createMediaStreamSource(stream);
+    const processor=context.createScriptProcessor(4096,1,1);
+    let total=0, count=0;
+    processor.onaudioprocess=e=>{
+      const input=e.inputBuffer.getChannelData(0);
+      let sum=0;
+      for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
+      total+=Math.sqrt(sum/input.length);
+      count++;
+    };
+    source.connect(processor);
+    processor.connect(context.destination);
+    await new Promise(resolve=>setTimeout(resolve,3000));
+    processor.disconnect(); source.disconnect();
+    stream.getTracks().forEach(t=>t.stop());
+    context.close().catch(()=>{});
+    const floor=count?total/count:0.006;
+    cfg.ambientNoiseFloor=floor;
+    cfg.sttSensitivity=Math.max(0.006,Math.min(0.04,Number((floor*2.4).toFixed(3))));
+    cfg.wakeSensitivity=Math.max(0.006,Math.min(0.03,Number((floor*1.8).toFixed(3))));
+    setEl('stt-sensitivity',cfg.sttSensitivity);
+    tv('stt-sensitivity-val',cfg.sttSensitivity.toFixed(3));
+    setEl('wake-sensitivity',cfg.wakeSensitivity);
+    tv('wake-sensitivity-val',cfg.wakeSensitivity.toFixed(3));
+    showToast(`Mic calibrated at ${floor.toFixed(3)}`);
+    showInterim('Calibration complete');
+    clearVoiceHud(1800);
+  }catch(err){
+    console.error('[Mic calibration]',err);
+    showInterim('Calibration failed');
+    clearVoiceHud(1800);
+  }
+}
+
+async function applyTranscribedText(text){
   const clean=(text||'').trim();
   if(!clean){
     setTranscribingUI(false);
     showInterim('Nothing detected - try again');
     micInputSnapshot='';
+    clearVoiceHud(1200);
+    queueWakeResume(250);
     setTimeout(()=>showInterim(''),2500);
     return;
   }
   setTranscribingUI(false);
-  const consumed=handleVoiceTranscript(clean,{applyToInput:true,skipWake:true});
-  if(consumed) return;
+  const consumed=await handleVoiceTranscript(clean,{applyToInput:true,skipWake:true});
+  if(consumed){
+    clearVoiceHud(1200);
+    queueWakeResume(350);
+    voiceListeningMode='manual';
+    return;
+  }
   const inp=document.getElementById('chat-input');
   inp.value=(micInputSnapshot?`${micInputSnapshot} `:'')+clean;
   inp.style.height='auto';
@@ -1226,6 +1562,7 @@ function applyTranscribedText(text){
     return;
   }
   showTranscriptPreview(clean);
+  setVoiceHud('ready','Transcript ready');
   inp.focus();
   micInputSnapshot='';
   setTimeout(()=>showInterim(''),2500);
@@ -1292,7 +1629,7 @@ async function transcribeWithOpenAI(audioBlob){
       throw new Error(`Whisper ${res.status}: ${errText}`);
     }
     const data=await res.json();
-    applyTranscribedText(data.text||'');
+    await applyTranscribedText(data.text||'');
   }catch(err){
     if(err.name==='AbortError' || transcriptionCanceled) return;
     console.error('[OpenAI STT]',err);
@@ -1304,7 +1641,7 @@ async function transcribeWithOpenAI(audioBlob){
     setTimeout(()=>showInterim(''),4000);
   }finally{
     transcribeAbortController=null;
-    if(!isListening) setupWakeWordListener();
+    if(!isListening) queueWakeResume(250);
   }
 }
 
@@ -1312,7 +1649,7 @@ async function transcribeWithWhisperCpp(audioBlob){
   transcriptionCanceled=false;
   try{
     const text=await transcribeWhisperCppText(audioBlob,getSTTLanguage());
-    applyTranscribedText(text);
+    await applyTranscribedText(text);
   }catch(err){
     if(transcriptionCanceled) return;
     console.error('[whisper.cpp STT]',err);
@@ -1320,7 +1657,7 @@ async function transcribeWithWhisperCpp(audioBlob){
     setTimeout(()=>showInterim(''),4500);
   }finally{
     transcribeChildProcess=null;
-    if(!isListening) setupWakeWordListener();
+    if(!isListening) queueWakeResume(250);
   }
 }
 
@@ -1346,6 +1683,7 @@ function setupMic(){
 
 async function startListening(){
   if(isListening||!ensureSTTConfigured()) return;
+  if(!voiceListeningMode) voiceListeningMode='manual';
   stopWakeWordListener();
   hideTranscriptPreview(true);
   setTranscribingUI(false);
@@ -1400,6 +1738,7 @@ async function startListening(){
   }
   setListeningVisuals(true);
   recordingTimer=setInterval(updateMicTimer,1000);
+  setVoiceHud('listening',voiceListeningMode==='wake'?'Listening after wake word...':'Listening...');
   showInterim('Recording 00:00 - click mic again to transcribe');
 }
 
@@ -1408,7 +1747,9 @@ function stopListening(sendAudio=true){
     cleanupRecording();
     showInterim('');
     pcmChunks=[];
-    setupWakeWordListener();
+    clearVoiceHud();
+    queueWakeResume(120);
+    voiceListeningMode='manual';
     return;
   }
   isListening=false;
@@ -1416,7 +1757,9 @@ function stopListening(sendAudio=true){
     cleanupRecording();
     showInterim('');
     pcmChunks=[];
-    setupWakeWordListener();
+    clearVoiceHud();
+    queueWakeResume(120);
+    voiceListeningMode='manual';
     return;
   }
   const recordedChunks=pcmChunks;
@@ -1428,6 +1771,7 @@ function stopListening(sendAudio=true){
     return;
   }
   showInterim('Transcribing...');
+  setVoiceHud('transcribing','Transcribing speech...');
   setTranscribingUI(true,'Transcribing speech...');
   const audioBlob=makeWavBlob(recordedChunks,16000);
   transcribeAudio(audioBlob).catch(err=>{
@@ -1486,6 +1830,21 @@ document.getElementById('stt-sensitivity')?.addEventListener('input',e=>{
   cfg.sttSensitivity=value;
   tv('stt-sensitivity-val',value.toFixed(3));
 });
+document.getElementById('wake-sensitivity')?.addEventListener('input',e=>{
+  const value=parseFloat(e.target.value)||0.010;
+  cfg.wakeSensitivity=value;
+  tv('wake-sensitivity-val',value.toFixed(3));
+});
+document.getElementById('wake-window-ms')?.addEventListener('input',e=>{
+  const value=parseInt(e.target.value,10)||2200;
+  cfg.wakeSpeechWindowMs=value;
+  tv('wake-window-ms-val',`${Math.round(value/100)/10}s`);
+});
+document.getElementById('wake-followup-ms')?.addEventListener('input',e=>{
+  const value=parseInt(e.target.value,10)||12000;
+  cfg.wakeFollowupMs=value;
+  tv('wake-followup-ms-val',`${Math.round(value/1000)}s`);
+});
 document.getElementById('tog-stt-hold')?.addEventListener('change',e=>{
   cfg.sttHoldToTalk=e.target.checked;
   setupMic();
@@ -1500,6 +1859,9 @@ document.getElementById('stt-wake-word')?.addEventListener('input',e=>{
   updateSTTUI();
   if(cfg.wakeWordEnabled) setupWakeWordListener();
 });
+document.getElementById('stt-wake-aliases')?.addEventListener('input',e=>{
+  cfg.wakeWordAliases=e.target.value||'';
+});
 document.getElementById('stt-bilingual-bias')?.addEventListener('change',e=>{
   cfg.sttBilingualBias=e.target.value||'off';
 });
@@ -1510,6 +1872,13 @@ document.getElementById('stt-mode')?.addEventListener('change',e=>{
   cfg.sttMode=e.target.value||'chat';
   updateSTTUI();
 });
+document.getElementById('voice-intent-routing')?.addEventListener('change',e=>{
+  cfg.voiceIntentRouting=e.target.value||'hybrid';
+});
+document.getElementById('voice-command-training')?.addEventListener('input',e=>{
+  cfg.voiceCommandTraining=e.target.value||'';
+});
+document.getElementById('voice-calibrate-btn')?.addEventListener('click',calibrateAmbientNoise);
 document.getElementById('stt-cancel-btn')?.addEventListener('click',cancelTranscription);
 document.getElementById('stt-edit-btn')?.addEventListener('click',()=>{
   hideTranscriptPreview(false);
@@ -1719,7 +2088,7 @@ function autoLearn(reply){
 function setStatus(s){
   const dot=document.getElementById('sdot'),txt=document.getElementById('stext');
   if(!dot||!txt)return;
-  if(s==='ready'){dot.className='status-dot green';txt.textContent='ready';}
+  if(s==='ready'){dot.className='status-dot green';txt.textContent='ready';if(!isListening&&!ttsBusy&&!isFollowupWindowActive()) clearVoiceHud(600);}
   if(s==='offline'){dot.className='status-dot grey';txt.textContent='offline';}
   if(s==='think'){dot.className='status-dot yellow';txt.textContent='thinking…';}
 }
@@ -1744,6 +2113,7 @@ async function send(){
   const inp=document.getElementById('chat-input');
   const text=inp.value.trim();
   if(!text||isThinking)return;
+  const wasVoiceDriven=isFollowupWindowActive() || voiceListeningMode==='wake' || voiceListeningMode==='followup';
   hideTranscriptPreview(true);
   inp.value='';inp.style.height='auto';
   resetIdleTimer();
@@ -1752,6 +2122,7 @@ async function send(){
   renderMsg('user',text);
   chatHistory.push({role:'user',content:text});
   isThinking=true;document.getElementById('send-btn').disabled=true;setStatus('think');
+  setVoiceHud('thinking','Thinking...');
 
   document.getElementById('chat-empty').style.display='none';
   const wrap=document.getElementById('chat-messages');
@@ -1766,15 +2137,7 @@ async function send(){
   let fullReply='',sentBuf='';
 
   try{
-    let stream;
-    switch(cfg.aiProvider){
-      case 'openai':    stream=streamOpenAI(chatHistory);    break;
-      case 'anthropic': stream=streamAnthropic(chatHistory); break;
-      case 'gemini':    stream=streamGemini(chatHistory);    break;
-      case 'nvidia':    stream=streamNVIDIA(chatHistory);    break;
-      case 'custom':    stream=streamCustom(chatHistory);    break;
-      default:          stream=streamOllama(chatHistory);
-    }
+    const stream=streamForProvider(chatHistory);
     for await(const token of stream){
       fullReply+=token;sentBuf+=token;
       bubble.innerHTML=esc(fullReply);scrollChat();
@@ -1794,10 +2157,19 @@ async function send(){
     ipcRenderer.send('save-chat-history',chatHistory);
     autoLearn(fullReply);setStatus('ready');
     maybeAutoSummarize();
+    if(wasVoiceDriven && cfg.wakeListenAfterReply!==false){
+      startVoiceSession();
+      setVoiceHud('followup','Reply done. Ask a follow-up...');
+      queueWakeResume(200);
+    }else{
+      clearVoiceHud(1400);
+    }
   }catch(err){
     bubble.classList.remove('streaming');
     bubble.innerHTML=esc(friendlyError(cfg.aiProvider,err.message));
     setStatus('offline');
+    if(wasVoiceDriven) queueWakeResume(300);
+    clearVoiceHud(1600);
   }finally{isThinking=false;document.getElementById('send-btn').disabled=false;}
 }
 
@@ -2066,6 +2438,18 @@ async function* streamCustom(history){
   });
   if(!res.ok)throw new Error(`Custom API ${res.status}: ${await res.text()}`);
   yield* streamOpenAIFormat(res);
+}
+
+function streamForProvider(history, useCurrentProvider=true){
+  const provider=useCurrentProvider?(cfg.aiProvider||'ollama'):'ollama';
+  switch(provider){
+    case 'openai': return streamOpenAI(history);
+    case 'anthropic': return streamAnthropic(history);
+    case 'gemini': return streamGemini(history);
+    case 'nvidia': return streamNVIDIA(history);
+    case 'custom': return streamCustom(history);
+    default: return streamOllama(history);
+  }
 }
 
 async function* streamOpenAIFormat(res){

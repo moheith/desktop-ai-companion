@@ -204,6 +204,52 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
   color:var(--pink);font-size:14px;font-weight:600;cursor:pointer;transition:all 0.15s;
   display:flex;align-items:center;justify-content:center;gap:8px;}
 .quick-chat-btn:hover{background:linear-gradient(135deg,rgba(244,114,182,0.18),rgba(167,139,250,0.14));transform:translateY(-1px);}
+.hero-card{background:
+  radial-gradient(circle at top left,rgba(244,114,182,0.18),transparent 38%),
+  radial-gradient(circle at top right,rgba(96,165,250,0.14),transparent 28%),
+  linear-gradient(160deg,var(--s1),var(--s2));
+  border:1px solid rgba(244,114,182,0.18);border-radius:18px;padding:18px 18px 16px;margin-bottom:14px;}
+.hero-top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px;}
+.hero-copy h2{font-size:22px;line-height:1.05;margin-bottom:6px;}
+.hero-copy p{font-size:12px;color:var(--text2);max-width:560px;line-height:1.65;}
+.hero-chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+.voice-layout{display:grid;grid-template-columns:1.2fr 0.8fr;gap:14px;align-items:start;}
+.stack{display:flex;flex-direction:column;gap:12px;}
+.card.clean{border-radius:16px;}
+.section-title{font-size:11px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:10px;}
+.hero-actions{display:flex;gap:8px;flex-wrap:wrap;}
+.mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+.metric{padding:12px;border-radius:14px;background:var(--s2);border:1px solid var(--border);}
+.metric .k{font-size:10px;font-family:'Space Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;}
+.metric .v{font-size:15px;font-weight:600;color:var(--text);}
+.metric .s{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.5;}
+.chip-row{display:flex;gap:8px;flex-wrap:wrap;}
+.cmd-chip{padding:7px 10px;border-radius:999px;background:var(--s2);border:1px solid var(--border);color:var(--text2);font-size:11px;cursor:pointer;transition:all 0.15s;}
+.cmd-chip:hover{border-color:var(--pink);color:var(--pink);}
+.subtle-box{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:12px;}
+.split-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.voice-hud{
+  position:fixed;right:18px;bottom:26px;z-index:9999;display:flex;align-items:center;gap:10px;
+  padding:10px 14px;border-radius:999px;background:rgba(10,10,20,0.94);border:1px solid var(--border);
+  box-shadow:0 16px 40px rgba(0,0,0,0.35);backdrop-filter:blur(10px);opacity:0;pointer-events:none;
+  transform:translateY(12px);transition:all 0.2s ease;
+}
+.voice-hud.active{opacity:1;transform:translateY(0);}
+.voice-hud-dot{width:9px;height:9px;border-radius:50%;background:var(--muted2);}
+.voice-hud[data-state="listening"] .voice-hud-dot,
+.voice-hud[data-state="wake"] .voice-hud-dot,
+.voice-hud[data-state="followup"] .voice-hud-dot{background:var(--pink);box-shadow:0 0 12px rgba(244,114,182,0.45);}
+.voice-hud[data-state="transcribing"] .voice-hud-dot,
+.voice-hud[data-state="thinking"] .voice-hud-dot{background:var(--yellow);box-shadow:0 0 12px rgba(251,191,36,0.45);}
+.voice-hud[data-state="speaking"] .voice-hud-dot{background:var(--blue);box-shadow:0 0 12px rgba(96,165,250,0.45);}
+.voice-hud[data-state="calibrating"] .voice-hud-dot{background:var(--green);box-shadow:0 0 12px rgba(52,211,153,0.45);}
+.voice-hud-text{font-size:12px;color:var(--text2);}
+@media (max-width: 980px){
+  .voice-layout,.split-row,.mini-grid,.card-grid.cols2,.card-grid.cols3{grid-template-columns:1fr;}
+  #sidebar{width:88px}
+  .nav-item .nl,.nav-section,.mood-info{display:none}
+  #mood-indicator{justify-content:center}
+}
 
 #page-chat{overflow:hidden;}
 #chat-header{
@@ -1103,6 +1149,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 
     </div>
   </div>
+</div>
+<div class="voice-hud" id="voice-hud" data-state="idle">
+  <span class="voice-hud-dot"></span>
+  <span class="voice-hud-text" id="voice-hud-text">Listening...</span>
 </div>
 
 <script src="control.js"></script>
