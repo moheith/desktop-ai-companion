@@ -465,6 +465,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
       <div class="nav-section">Configure</div>
       <div class="nav-item"        data-page="ai">    <span class="ni">🤖</span><span class="nl">AI Model</span></div>
       <div class="nav-item"        data-page="voice"> <span class="ni">🔊</span><span class="nl">Voice</span></div>
+      <div class="nav-item"        data-page="mic">   <span class="ni">🎤</span><span class="nl">Mic</span></div>
       <div class="nav-item"        data-page="memory"><span class="ni">🧠</span><span class="nl">Memory</span></div>
       <div class="nav-section">Customize</div>
       <div class="nav-item"        data-page="looks"> <span class="ni">🎨</span><span class="nl">Appearance</span></div>
@@ -733,7 +734,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
       <!-- VOICE -->
       <div class="page" id="page-voice">
         <div class="page-inner">
-          <div class="page-header"><h1>🔊 Voice Settings</h1><p>How your companion speaks and listens.</p></div>
+          <div class="page-header"><h1>🔊 Voice Settings</h1><p>How your companion speaks back to you.</p></div>
 
           <div class="card">
             <div class="card-header">Text to Speech</div>
@@ -808,8 +809,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
             </div>
           </div>
 
+          <div class="btn-row" id="voice-save-row">
+            <button class="btn btn-primary" id="voice-save-btn">💾 Save Voice Settings</button>
+            <span class="flash-ok" id="voice-save-ok">✓ Saved!</span>
+          </div>
+
           <!-- ── STT CARD — Whisper push-to-talk ── -->
-          <div class="card">
+          <div class="card" id="mic-settings-card">
             <div class="card-header">
               🎤 Microphone — Powered by Whisper
               <span class="tag tag-green" style="font-size:9px;text-transform:none;letter-spacing:0;">Push-to-Talk</span>
@@ -878,7 +884,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                   <div class="trow" style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius2);padding:10px 12px;">
                     <div class="tl">
                       <span class="tl-n">Enable wake word</span>
-                      <span class="tl-d">Always-on Porcupine wake engine that beeps, then starts the normal whisper.cpp capture</span>
+                      <span class="tl-d">Hands-free wake detection that beeps, then starts the normal whisper.cpp capture</span>
                     </div>
                     <label class="toggle"><input type="checkbox" id="tog-stt-wake"/><div class="track"><div class="thumb"></div></div></label>
                   </div>
@@ -913,7 +919,11 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 </div>
               </div>
 
-              <div class="card-grid cols2" style="margin-bottom:12px;">
+              <div id="wake-browser-box" class="hint" style="margin-bottom:12px;">
+                Built-in local wake uses your current microphone plus local whisper transcription. No AccessKey or extra files are required.
+              </div>
+
+              <div class="card-grid cols2" id="wake-porcupine-box" style="display:none;margin-bottom:12px;">
                 <div class="field">
                   <label>Porcupine Access Key</label>
                   <input class="inp" id="porcupine-access-key" placeholder="Paste your Picovoice access key"/>
@@ -924,7 +934,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 </div>
               </div>
 
-              <div class="card-grid cols2" style="margin-bottom:12px;">
+              <div class="card-grid cols2" id="wake-porcupine-tuning" style="display:none;margin-bottom:12px;">
                 <div class="field">
                   <label>Porcupine Sensitivity</label>
                   <div class="slider-row" style="gap:4px;">
@@ -1052,10 +1062,17 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
             </div>
           </div>
 
-          <div class="btn-row">
-            <button class="btn btn-primary" id="voice-save-btn">💾 Save Voice Settings</button>
-            <span class="flash-ok" id="voice-save-ok">✓ Saved!</span>
+          <div class="btn-row" id="mic-save-row">
+            <button class="btn btn-primary" id="mic-save-btn">💾 Save Mic Settings</button>
+            <span class="flash-ok" id="mic-save-ok">✓ Saved!</span>
           </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-mic">
+        <div class="page-inner">
+          <div class="page-header"><h1>🎤 Mic Settings</h1><p>How your companion listens, wakes, and transcribes.</p></div>
+          <div id="mic-page-slot"></div>
         </div>
       </div>
 

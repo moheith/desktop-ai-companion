@@ -225,6 +225,15 @@ function switchPage(pg){
 }
 document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>switchPage(n.dataset.page));
 
+function setupSplitSettingsPages(){
+  const micSlot=document.getElementById('mic-page-slot');
+  const micCard=document.getElementById('mic-settings-card');
+  const micSaveRow=document.getElementById('mic-save-row');
+  if(micSlot&&micCard&&micCard.parentElement!==micSlot) micSlot.appendChild(micCard);
+  if(micSlot&&micSaveRow&&micSaveRow.parentElement!==micSlot) micSlot.appendChild(micSaveRow);
+}
+setupSplitSettingsPages();
+
 // ─── Window buttons ───────────────────────────────────────
 document.getElementById('btn-close').onclick=()=>ipcRenderer.send('close-panel');
 document.getElementById('btn-min').onclick=()=>ipcRenderer.send('minimize-panel');
@@ -645,6 +654,7 @@ function openVoiceRoute(target){
   switch(target){
     case 'home':
     case 'chat':
+    case 'mic':
     case 'voice':
     case 'memory':
     case 'looks':
@@ -670,7 +680,8 @@ function openVoiceRoute(target){
 
 function inferVoiceRoute(text){
   const routes=[
-    { target:'voice', keys:['voice setting','voice settings','microphone','mic setting','mic settings','speech setting','speech settings','voice tab'] },
+    { target:'mic', keys:['mic','microphone','wake word','speech to text','stt','listening settings','mic settings'] },
+    { target:'voice', keys:['voice setting','voice settings','speech output','tts settings','voice tab'] },
     { target:'memory', keys:['memory','remember','memories','notes'] },
     { target:'chat', keys:['chat','conversation','messages','talk page'] },
     { target:'home', keys:['home','dashboard','main page'] },
@@ -782,7 +793,7 @@ async function inferVoiceIntent(rawText){
   try{
     const prompt=`Return strict JSON only. Interpret this voice command for a desktop mascot app.
 Allowed actions: open_route, set_mascot_visibility, set_click_through, set_border, set_always_on_top, set_behind_taskbar, move_mascot, scale_mascot, stop_tts, stop_listening, clear_memory, clear_chat, none.
-For open_route target can be: home, chat, ai, openai, anthropic, gemini, ollama, nvidia, custom, voice, memory, looks, mascot.
+For open_route target can be: home, chat, ai, openai, anthropic, gemini, ollama, nvidia, custom, voice, mic, memory, looks, mascot.
 For booleans use value true/false. For move use dx and dy integers. For scale use delta number.
 If the command is conversational and not a device command, return {"action":"none"}.
 Command: ${rawText}`;
@@ -1210,10 +1221,21 @@ document.getElementById('eleven-load-voices').onclick=async()=>{
 document.getElementById('voice-preview-btn').onclick=()=>enqueueTTS('Hello! I am your AI companion. How are you today?');
 document.getElementById('eleven-preview-btn').onclick=()=>enqueueTTS('Hello! I am your AI companion. How are you today?');
 
-// Voice save
-document.getElementById('voice-save-btn').onclick=()=>{
+function saveVoiceSettings(){
   cfg.voiceEngine=currentVoiceEngine;
   cfg.ttsEnabled=document.getElementById('tog-tts').checked;
+  cfg.elevenKey=val('eleven-key');cfg.elevenModel=val('eleven-model');
+  cfg.elevenVoiceId=selectedElevenVoiceId||cfg.elevenVoiceId;
+  cfg.piperPath=val('piper-path');cfg.piperVoice=val('piper-voice');
+  cfg.openaiTTSKey=val('openai-tts-key');
+  cfg.openaiTTSModel=val('openai-tts-model');
+  cfg.openaiTTSVoice=openAITTSVoice;
+  ipcRenderer.send('save-config',{...cfg});
+  flash('voice-save-ok');
+  updateHomeCards();
+}
+
+function saveMicSettings(){
   cfg.sttEnabled=document.getElementById('tog-stt').checked;
   cfg.sttEngine=val('stt-engine')||'openai';
   cfg.sttLanguage=val('stt-language')||'auto';
@@ -1243,20 +1265,17 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.voiceConfirmActions=document.getElementById('tog-voice-confirm')?.checked!==false;
   cfg.voiceIntentRouting=val('voice-intent-routing')||'hybrid';
   cfg.voiceCommandTraining=val('voice-command-training');
-  cfg.elevenKey=val('eleven-key');cfg.elevenModel=val('eleven-model');
-  cfg.elevenVoiceId=selectedElevenVoiceId||cfg.elevenVoiceId;
-  cfg.piperPath=val('piper-path');cfg.piperVoice=val('piper-voice');
   cfg.whisperCppPath=val('whispercpp-path');
   cfg.whisperCppModel=val('whispercpp-model');
-  cfg.openaiTTSKey=val('openai-tts-key');
-  cfg.openaiTTSModel=val('openai-tts-model');
-  cfg.openaiTTSVoice=openAITTSVoice;
   saveCurrentMicProfile();
   ipcRenderer.send('save-config',{...cfg});
-  flash('voice-save-ok');setupMic();updateHomeCards();
+  flash('mic-save-ok');setupMic();updateHomeCards();
   updateSTTUI();
   setupWakeWordListener();
-};
+}
+
+document.getElementById('voice-save-btn').onclick=saveVoiceSettings;
+document.getElementById('mic-save-btn').onclick=saveMicSettings;
 
 // ─── TTS ──────────────────────────────────────────────────
 const MOOD_TTS={
@@ -1560,11 +1579,18 @@ function updateSTTUI(){
   const txt=document.getElementById('whisper-key-status');
   const openaiBox=document.getElementById('stt-openai-box');
   const localBox=document.getElementById('stt-local-box');
+  const wakeBrowserBox=document.getElementById('wake-browser-box');
+  const wakePorcupineBox=document.getElementById('wake-porcupine-box');
+  const wakePorcupineTuning=document.getElementById('wake-porcupine-tuning');
   const modeChip=document.getElementById('stt-mode-chip');
   const wakeChip=document.getElementById('stt-wake-chip');
   const engine=getSTTEngine();
+  const wakeEngine=getWakeEngine();
   if(openaiBox) openaiBox.style.display=engine==='openai'?'block':'none';
   if(localBox) localBox.style.display=engine==='local'?'block':'none';
+  if(wakeBrowserBox) wakeBrowserBox.style.display=wakeEngine==='browser'?'block':'none';
+  if(wakePorcupineBox) wakePorcupineBox.style.display=wakeEngine==='porcupine'?'grid':'none';
+  if(wakePorcupineTuning) wakePorcupineTuning.style.display=wakeEngine==='porcupine'?'grid':'none';
   if(modeChip) modeChip.textContent=`mode: ${cfg.sttMode||'chat'}`;
   if(wakeChip) wakeChip.textContent=`wake word: ${cfg.wakeWordEnabled?(cfg.wakeWordPhrase||'on'):'off'}`;
   updateVoiceDashboard();
