@@ -3,6 +3,11 @@ const fs       = require('fs');
 const path     = require('path');
 const os       = require('os');
 const { exec, execFile } = require('child_process');
+let Porcupine=null, PvRecorder=null;
+try{
+  ({ Porcupine } = require('@picovoice/porcupine-node'));
+  ({ PvRecorder } = require('@picovoice/pvrecorder-node'));
+}catch{}
 
 // ─── Splash ───────────────────────────────────────────────
 const splashBar = document.getElementById('splash-bar');
@@ -58,6 +63,8 @@ let cfg={
   micDeviceId:'',sttSilenceTimeoutMs:1600,sttSensitivity:0.014,
   sttHoldToTalk:false,wakeWordEnabled:false,wakeWordPhrase:'hey mascot',
   sttBilingualBias:'off',sttNoisePreset:'medium',sttMode:'chat',
+  wakeEngine:'browser',
+  porcupineAccessKey:'',porcupineKeywordPath:'',porcupineSensitivity:0.55,
   wakeWordAliases:'hi mascot, hey buddy',
   wakeFollowupEnabled:true,wakeFollowupMs:12000,wakeListenAfterReply:true,
   wakeSensitivity:0.010,wakeSpeechWindowMs:2200,wakeSilenceMs:420,
@@ -81,8 +88,10 @@ let availableMics=[],pendingTranscript='';
 let lastVoiceCommand='';
 let wakeMonitorStream=null,wakeMonitorContext=null,wakeMonitorSource=null,wakeMonitorProcessor=null,wakeMonitorSilencer=null;
 let wakeMonitorChunks=[],wakeMonitorSpeechMs=0,wakeMonitorSilenceMs=0,wakeMonitorHeardSpeech=false,wakeMonitorTranscribing=false;
+let porcupineHandle=null, porcupineRecorder=null, porcupineLoopActive=false, porcupineRestartTimer=null;
 let micInputSnapshot='';
 let lastVoiceIntent=null,voiceSessionUntil=0,voiceSessionPrimed=false,voiceListeningMode='manual',wakeResumeTimer=null;
+let pendingFollowupAfterSpeech=false,awaitingFollowup=false,followupArmUntil=0,followupTimeoutTimer=null;
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -126,7 +135,12 @@ function applyConfig(){
   ck('tog-stt-hold',!!cfg.sttHoldToTalk);
   ck('tog-stt-wake',!!cfg.wakeWordEnabled);
   setEl('stt-wake-word',cfg.wakeWordPhrase||'hey mascot');
+  setEl('wake-engine',cfg.wakeEngine||'browser');
   setEl('stt-wake-aliases',cfg.wakeWordAliases||'');
+  setEl('porcupine-access-key',cfg.porcupineAccessKey||'');
+  setEl('porcupine-keyword-path',cfg.porcupineKeywordPath||'');
+  setEl('porcupine-sensitivity',cfg.porcupineSensitivity||0.55);
+  tv('porcupine-sensitivity-val',Number(cfg.porcupineSensitivity||0.55).toFixed(2));
   setEl('stt-bilingual-bias',cfg.sttBilingualBias||'off');
   setEl('stt-noise-preset',cfg.sttNoisePreset||'medium');
   setEl('stt-mode',cfg.sttMode||'chat');
@@ -425,23 +439,74 @@ function getWakePhrases(){
 }
 
 function isFollowupWindowActive(){
-  return cfg.wakeFollowupEnabled!==false && Date.now()<voiceSessionUntil;
+  return cfg.wakeFollowupEnabled!==false && awaitingFollowup;
 }
 
 function startVoiceSession(){
   voiceSessionUntil=Date.now()+(cfg.wakeFollowupMs||12000);
   voiceSessionPrimed=true;
-  setVoiceHud('followup',`Follow-up window ${Math.round((cfg.wakeFollowupMs||12000)/1000)}s`);
+}
+
+function armFollowupWindow(){
+  if(cfg.wakeFollowupEnabled===false) return;
+  clearTimeout(followupTimeoutTimer);
+  awaitingFollowup=true;
+  followupArmUntil=Date.now()+2000;
+  setVoiceHud('followup','Reply done. Speak within 2 seconds...');
+  playCue('followup');
+  showToast('Follow-up ready');
+  queueWakeResume(0);
+  followupTimeoutTimer=setTimeout(()=>{
+    awaitingFollowup=false;
+    followupArmUntil=0;
+    clearVoiceSession();
+    clearVoiceHud(400);
+  },2100);
 }
 
 function clearVoiceSession(){
   voiceSessionUntil=0;
   voiceSessionPrimed=false;
+  awaitingFollowup=false;
+  followupArmUntil=0;
+  pendingFollowupAfterSpeech=false;
+  voiceListeningMode='manual';
+  clearTimeout(followupTimeoutTimer);
+}
+
+function playCue(kind='wake'){
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    const ac=new AC();
+    const schedule=(freq,start,duration,gainLevel)=>{
+      const osc=ac.createOscillator();
+      const gain=ac.createGain();
+      osc.type='sine';
+      osc.frequency.value=freq;
+      gain.gain.setValueAtTime(0.001,ac.currentTime+start);
+      gain.gain.exponentialRampToValueAtTime(gainLevel,ac.currentTime+start+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+start+duration);
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start(ac.currentTime+start);
+      osc.stop(ac.currentTime+start+duration+0.02);
+    };
+    if(kind==='followup'){
+      schedule(740,0,0.12,0.08);
+      schedule(988,0.14,0.16,0.08);
+    }else{
+      schedule(880,0,0.12,0.09);
+      schedule(1175,0.13,0.15,0.09);
+    }
+    setTimeout(()=>ac.close().catch(()=>{}),500);
+  }catch{}
 }
 
 function setVoiceHud(state,text=''){
   const hud=document.getElementById('voice-hud');
   const label=document.getElementById('voice-hud-text');
+  const title=document.getElementById('voice-hud-title');
+  const icon=document.getElementById('voice-hud-icon');
   if(!hud) return;
   tv('voice-metric-runtime',text||'Idle');
   if(cfg.voiceHudEnabled===false){
@@ -451,6 +516,28 @@ function setVoiceHud(state,text=''){
   }
   hud.dataset.state=state||'idle';
   hud.classList.toggle('active',!!text);
+  if(title) title.textContent=({
+    idle:'Voice',
+    wake:'Wake',
+    listening:'Listening',
+    followup:'Follow-up',
+    transcribing:'Transcribing',
+    thinking:'Thinking',
+    speaking:'Speaking',
+    calibrating:'Calibrating',
+    ready:'Ready'
+  })[state||'idle']||'Voice';
+  if(icon) icon.textContent=({
+    wake:'✨',
+    listening:'🎙',
+    followup:'↩',
+    transcribing:'📝',
+    thinking:'🤔',
+    speaking:'🔊',
+    calibrating:'🎚',
+    ready:'✅',
+    idle:'🎙'
+  })[state||'idle']||'🎙';
   if(label) label.textContent=text;
 }
 
@@ -463,8 +550,47 @@ function clearVoiceHud(delay=0){
 function queueWakeResume(delay=0){
   clearTimeout(wakeResumeTimer);
   wakeResumeTimer=setTimeout(()=>{
-    if(cfg.wakeWordEnabled && !isListening) setupWakeWordListener();
+    if(cfg.wakeWordEnabled && !isListening && !isThinking && !ttsBusy && !pendingFollowupAfterSpeech) setupWakeWordListener();
   },delay);
+}
+
+function getPorcupineKeywordPath(){
+  const raw=(cfg.porcupineKeywordPath||'').trim();
+  if(!raw) return '';
+  return path.isAbsolute(raw)?raw:path.join(__dirname,raw);
+}
+
+function getPorcupineReadiness(){
+  const keywordPath=getPorcupineKeywordPath();
+  return {
+    sdkReady:!!(Porcupine&&PvRecorder),
+    accessKey:!!String(cfg.porcupineAccessKey||'').trim(),
+    keywordPath,
+    keywordReady:!!(keywordPath&&fs.existsSync(keywordPath))
+  };
+}
+
+function getPorcupineDeviceIndex(){
+  if(!PvRecorder) return -1;
+  if(!cfg.micDeviceId) return -1;
+  const browserDevice=availableMics.find(m=>m.deviceId===cfg.micDeviceId);
+  const label=(browserDevice?.label||'').trim().toLowerCase();
+  if(!label) return -1;
+  try{
+    const devices=PvRecorder.getAvailableDevices();
+    const exact=devices.findIndex(name=>String(name||'').trim().toLowerCase()===label);
+    if(exact!==-1) return exact;
+    return devices.findIndex(name=>{
+      const candidate=String(name||'').trim().toLowerCase();
+      return candidate && (candidate.includes(label) || label.includes(candidate));
+    });
+  }catch{
+    return -1;
+  }
+}
+
+function getWakeEngine(){
+  return cfg.wakeEngine==='porcupine' ? 'porcupine' : 'browser';
 }
 
 function extractWakePayload(text){
@@ -499,6 +625,7 @@ function setMascotVisibility(visible){
   cfg.mascotVisible=visible;
   ck('tog-mascot',visible);
   ipcRenderer.send('toggle-mascot',visible);
+  showToast(visible?'Mascot shown':'Mascot hidden',1800);
   updateHomeCards();
 }
 
@@ -595,10 +722,10 @@ function buildHeuristicIntent(rawText){
     return { action:'stop_tts' };
   }
 
-  if(voiceHasAny(text,['mascot chupa do','character chupa do']) || (hideAction && voiceHasAny(text,['mascot','character','avatar','girl']))){
+  if(voiceHasAny(text,['mascot chupa do','character chupa do','hide yourself']) || (hideAction && voiceHasAny(text,['mascot','character','avatar','girl','yourself']))){
     return { action:'set_mascot_visibility', value:false };
   }
-  if(voiceHasAny(text,['mascot dikhao','character dikhao']) || (showAction && voiceHasAny(text,['mascot','character','avatar','girl']))){
+  if(voiceHasAny(text,['mascot dikhao','character dikhao','show yourself','come back']) || (showAction && voiceHasAny(text,['mascot','character','avatar','girl','yourself']))){
     return { action:'set_mascot_visibility', value:true };
   }
 
@@ -816,6 +943,14 @@ function stopWakeWordListener(){
   wakeMonitorSilenceMs=0;
   wakeMonitorHeardSpeech=false;
   wakeMonitorTranscribing=false;
+  clearTimeout(porcupineRestartTimer);
+  porcupineRestartTimer=null;
+  porcupineLoopActive=false;
+  try{ porcupineRecorder?.stop?.(); }catch{}
+  try{ porcupineRecorder?.release?.(); }catch{}
+  try{ porcupineHandle?.release?.(); }catch{}
+  porcupineRecorder=null;
+  porcupineHandle=null;
 }
 
 function wakeDebug(){}
@@ -839,9 +974,10 @@ function triggerWakeListening(){
   voiceListeningMode='wake';
   startVoiceSession();
   if(cfg.voiceInterruptEnabled!==false && ttsBusy) stopTTS();
-  playWakeCue();
+  playCue('wake');
   showInterim('Wake word detected. Listening...');
   setVoiceHud('wake','Wake detected. Listening...');
+  showToast('Wake word detected');
   stopWakeWordListener();
   setTimeout(()=>startListening(),20);
 }
@@ -859,19 +995,13 @@ async function processWakeTranscript(text){
   wakeDebug('wake-transcript', heard);
   if(!heard) return;
   if(isFollowupWindowActive()){
+    awaitingFollowup=false;
+    clearTimeout(followupTimeoutTimer);
     voiceListeningMode='followup';
-    showInterim(`Follow-up: ${heard}`);
-    const consumed=await handleVoiceTranscript(heard,{skipWake:true,applyToInput:true});
-    if(cfg.sttMode==='chat' && !consumed){
-      const inp=document.getElementById('chat-input');
-      if(inp){
-        inp.value=heard;
-        inp.style.height='auto';
-        inp.style.height=Math.min(inp.scrollHeight,100)+'px';
-      }
-      hideTranscriptPreview(true);
-      setTimeout(()=>send(),120);
-    }
+    showInterim('Follow-up detected. Listening...');
+    setVoiceHud('followup','Follow-up detected. Listening...');
+    stopWakeWordListener();
+    setTimeout(()=>startListening(),20);
     return;
   }
   if(!isWakeMatch(heard)) return;
@@ -880,7 +1010,7 @@ async function processWakeTranscript(text){
     triggerWakeListening();
     return;
   }
-  playWakeCue();
+  playCue('wake');
   showInterim(`Heard: ${cleaned}`);
   const consumed=await handleVoiceTranscript(cleaned,{skipWake:true,applyToInput:true});
   if(cfg.sttMode==='chat' && !consumed){
@@ -919,50 +1049,88 @@ async function setupWakeWordListener(){
   if(getSTTEngine()!=='local') return;
   const resolved=getEffectiveWhisperPaths();
   if(!resolved.exe || !resolved.model || !fs.existsSync(resolved.exe) || !fs.existsSync(resolved.model)) return;
-  wakeDebug('starting browser wake monitor', { deviceId:cfg.micDeviceId||'default', language:getWhisperCommandLang() });
+  if(getWakeEngine()!=='porcupine'){
+    try{
+      wakeMonitorStream=await navigator.mediaDevices.getUserMedia({
+        audio:{
+          deviceId:cfg.micDeviceId?{exact:cfg.micDeviceId}:undefined,
+          channelCount:1,
+          ...getNoisePresetConstraints()
+        }
+      });
+      const AC=window.AudioContext||window.webkitAudioContext;
+      wakeMonitorContext=new AC({sampleRate:16000});
+      wakeMonitorSource=wakeMonitorContext.createMediaStreamSource(wakeMonitorStream);
+      wakeMonitorProcessor=wakeMonitorContext.createScriptProcessor(4096,1,1);
+      wakeMonitorSilencer=wakeMonitorContext.createGain();
+      wakeMonitorSilencer.gain.value=0;
+      wakeMonitorProcessor.onaudioprocess=e=>{
+        if(!cfg.wakeWordEnabled || isListening || wakeMonitorTranscribing || isThinking || ttsBusy) return;
+        const input=e.inputBuffer.getChannelData(0);
+        wakeMonitorChunks.push(new Float32Array(input));
+        trimWakeChunks();
+        let sum=0;
+        for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
+        const rms=Math.sqrt(sum/input.length);
+        const chunkMs=(input.length/(wakeMonitorContext?.sampleRate||16000))*1000;
+        const threshold=Math.max(0.006,Math.min(cfg.wakeSensitivity||((cfg.sttSensitivity||0.014)*0.7),0.03));
+        if(rms>threshold){
+          wakeMonitorHeardSpeech=true;
+          wakeMonitorSpeechMs+=chunkMs;
+          wakeMonitorSilenceMs=0;
+        }else if(wakeMonitorHeardSpeech){
+          wakeMonitorSilenceMs+=chunkMs;
+          if(wakeMonitorSilenceMs>=(cfg.wakeSilenceMs||420)) flushWakeMonitor();
+        }
+        if(wakeMonitorHeardSpeech && wakeMonitorSpeechMs>=(cfg.wakeSpeechWindowMs||2200)) flushWakeMonitor();
+      };
+      wakeMonitorSource.connect(wakeMonitorProcessor);
+      wakeMonitorProcessor.connect(wakeMonitorSilencer);
+      wakeMonitorSilencer.connect(wakeMonitorContext.destination);
+      setVoiceHud('wake',`Wake armed for "${cfg.wakeWordPhrase||'hey mascot'}"`);
+      updateSTTUI();
+      return;
+    }catch(err){
+      console.error('[Wake browser init]',err);
+      showInterim(`Wake setup failed: ${String(err.message||err).slice(0,80)}`);
+      setTimeout(()=>showInterim(''),3500);
+      stopWakeWordListener();
+      return;
+    }
+  }
+  const ready=getPorcupineReadiness();
+  if(!ready.sdkReady || !ready.accessKey || !ready.keywordReady) return;
   try{
-    wakeMonitorStream=await navigator.mediaDevices.getUserMedia({
-      audio:{
-        deviceId:cfg.micDeviceId?{exact:cfg.micDeviceId}:undefined,
-        channelCount:1,
-        ...getNoisePresetConstraints()
-      }
-    });
-    const AC=window.AudioContext||window.webkitAudioContext;
-    wakeMonitorContext=new AC({sampleRate:16000});
-    wakeMonitorSource=wakeMonitorContext.createMediaStreamSource(wakeMonitorStream);
-    wakeMonitorProcessor=wakeMonitorContext.createScriptProcessor(4096,1,1);
-    wakeMonitorSilencer=wakeMonitorContext.createGain();
-    wakeMonitorSilencer.gain.value=0;
-    wakeMonitorProcessor.onaudioprocess=e=>{
-      if(!cfg.wakeWordEnabled || isListening || wakeMonitorTranscribing) return;
-      const input=e.inputBuffer.getChannelData(0);
-      wakeMonitorChunks.push(new Float32Array(input));
-      trimWakeChunks();
-      let sum=0;
-      for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
-      const rms=Math.sqrt(sum/input.length);
-      const chunkMs=(input.length/(wakeMonitorContext?.sampleRate||16000))*1000;
-      const threshold=Math.max(0.006,Math.min(cfg.wakeSensitivity||((cfg.sttSensitivity||0.014)*0.7),0.03));
-      if(rms>threshold){
-        wakeMonitorHeardSpeech=true;
-        wakeMonitorSpeechMs+=chunkMs;
-        wakeMonitorSilenceMs=0;
-      }else if(wakeMonitorHeardSpeech){
-        wakeMonitorSilenceMs+=chunkMs;
-        if(wakeMonitorSilenceMs>=(cfg.wakeSilenceMs||420)){
-          flushWakeMonitor();
+    const sensitivity=Math.max(0.2,Math.min(Number(cfg.porcupineSensitivity||0.55),0.95));
+    porcupineHandle=new Porcupine(String(cfg.porcupineAccessKey||'').trim(), [ready.keywordPath], [sensitivity]);
+    const frameLength=porcupineHandle.frameLength || 512;
+    const deviceIndex=getPorcupineDeviceIndex();
+    porcupineRecorder=deviceIndex>=0 ? new PvRecorder(frameLength, deviceIndex) : new PvRecorder(frameLength);
+    porcupineRecorder.start();
+    porcupineLoopActive=true;
+    setVoiceHud('wake',`Wake armed for "${cfg.wakeWordPhrase||'hey mascot'}"`);
+    updateSTTUI();
+    (async ()=>{
+      while(porcupineLoopActive && porcupineRecorder?.isRecording){
+        const frame=await porcupineRecorder.read();
+        if(!porcupineLoopActive || !cfg.wakeWordEnabled || isListening || isThinking || ttsBusy) continue;
+        const keywordIndex=porcupineHandle.process(frame);
+        if(keywordIndex>=0){
+          triggerWakeListening();
+          break;
         }
       }
-      if(wakeMonitorHeardSpeech && wakeMonitorSpeechMs>=(cfg.wakeSpeechWindowMs||2200)){
-        flushWakeMonitor();
-      }
-    };
-    wakeMonitorSource.connect(wakeMonitorProcessor);
-    wakeMonitorProcessor.connect(wakeMonitorSilencer);
-    wakeMonitorSilencer.connect(wakeMonitorContext.destination);
+    })().catch(err=>{
+      console.error('[Porcupine wake]',err);
+      showInterim(`Wake listener failed: ${String(err.message||err).slice(0,80)}`);
+      setTimeout(()=>showInterim(''),3500);
+      stopWakeWordListener();
+      updateSTTUI();
+    });
   }catch(err){
-    wakeDebug('browser wake monitor failed', String(err?.message||err));
+    console.error('[Porcupine init]',err);
+    showInterim(`Wake setup failed: ${String(err.message||err).slice(0,80)}`);
+    setTimeout(()=>showInterim(''),3500);
     stopWakeWordListener();
   }
 }
@@ -1054,7 +1222,11 @@ document.getElementById('voice-save-btn').onclick=()=>{
   cfg.sttHoldToTalk=document.getElementById('tog-stt-hold')?.checked===true;
   cfg.wakeWordEnabled=document.getElementById('tog-stt-wake')?.checked===true;
   cfg.wakeWordPhrase=(val('stt-wake-word')||'hey mascot').trim();
+  cfg.wakeEngine=val('wake-engine')||'browser';
   cfg.wakeWordAliases=val('stt-wake-aliases');
+  cfg.porcupineAccessKey=val('porcupine-access-key');
+  cfg.porcupineKeywordPath=val('porcupine-keyword-path');
+  cfg.porcupineSensitivity=parseFloat(val('porcupine-sensitivity')||'0.55');
   cfg.sttBilingualBias=val('stt-bilingual-bias')||'off';
   cfg.sttNoisePreset=val('stt-noise-preset')||'medium';
   cfg.sttMode=val('stt-mode')||'chat';
@@ -1116,7 +1288,10 @@ function enqueueTTS(text){
 function processTTSQueue(){
   if(!ttsQueue.length){
     ttsBusy=false;setBadge('');
-    if(isFollowupWindowActive()) setVoiceHud('followup','Ask a follow-up...');
+    if(pendingFollowupAfterSpeech){
+      pendingFollowupAfterSpeech=false;
+      armFollowupWindow();
+    } else if(isFollowupWindowActive()) setVoiceHud('followup','Ask a follow-up now...');
     else clearVoiceHud(600);
     return;
   }
@@ -1137,7 +1312,10 @@ function stopTTS(){
   ttsQueue=[];ttsBusy=false;setBadge('');
   window.speechSynthesis.cancel();
   if(piperCurrentAudio){try{piperCurrentAudio.pause();}catch(e){}piperCurrentAudio=null;}
-  if(isFollowupWindowActive()) queueWakeResume(150);
+  if(pendingFollowupAfterSpeech) {
+    pendingFollowupAfterSpeech=false;
+    armFollowupWindow();
+  } else if(isFollowupWindowActive()) queueWakeResume(150);
 }
 function setBadge(state){
   const b=document.getElementById('tts-badge');if(!b)return;
@@ -1393,6 +1571,7 @@ function updateSTTUI(){
   if(!dot||!txt)return;
   if(engine==='local'){
     const resolved=getEffectiveWhisperPaths();
+    const porcupine=getPorcupineReadiness();
     const ready=!!(resolved.exe&&resolved.model&&fs.existsSync(resolved.exe)&&fs.existsSync(resolved.model));
     dot.className=`status-dot ${ready?'green':'yellow'}`;
     txt.textContent=ready
@@ -1400,7 +1579,14 @@ function updateSTTUI(){
       : 'Add whisper.cpp executable and model path below';
     txt.style.color=ready?'var(--green)':'var(--yellow)';
     if(ready && cfg.wakeWordEnabled && !isListening){
-      txt.textContent=`Wake listener armed: say "${cfg.wakeWordPhrase||'hey mascot'}"`;
+      if(getWakeEngine()==='porcupine'){
+        if(!porcupine.sdkReady) txt.textContent='Install Porcupine packages to enable wake word runtime';
+        else if(!porcupine.accessKey) txt.textContent='Add your Porcupine AccessKey to enable wake word';
+        else if(!porcupine.keywordReady) txt.textContent='Add your Porcupine .ppn keyword file to enable wake word';
+        else txt.textContent=`Porcupine wake listener armed for "${cfg.wakeWordPhrase||'hey mascot'}"`;
+      }else{
+        txt.textContent=`Built-in local wake listener armed for "${cfg.wakeWordPhrase||'hey mascot'}"`;
+      }
     }
     return;
   }
@@ -1835,6 +2021,11 @@ document.getElementById('wake-sensitivity')?.addEventListener('input',e=>{
   cfg.wakeSensitivity=value;
   tv('wake-sensitivity-val',value.toFixed(3));
 });
+document.getElementById('porcupine-sensitivity')?.addEventListener('input',e=>{
+  const value=parseFloat(e.target.value)||0.55;
+  cfg.porcupineSensitivity=value;
+  tv('porcupine-sensitivity-val',value.toFixed(2));
+});
 document.getElementById('wake-window-ms')?.addEventListener('input',e=>{
   const value=parseInt(e.target.value,10)||2200;
   cfg.wakeSpeechWindowMs=value;
@@ -1871,6 +2062,11 @@ document.getElementById('stt-noise-preset')?.addEventListener('change',e=>{
 document.getElementById('stt-mode')?.addEventListener('change',e=>{
   cfg.sttMode=e.target.value||'chat';
   updateSTTUI();
+});
+document.getElementById('wake-engine')?.addEventListener('change',e=>{
+  cfg.wakeEngine=e.target.value||'browser';
+  updateSTTUI();
+  if(cfg.wakeWordEnabled) setupWakeWordListener();
 });
 document.getElementById('voice-intent-routing')?.addEventListener('change',e=>{
   cfg.voiceIntentRouting=e.target.value||'hybrid';
@@ -2159,15 +2355,17 @@ async function send(){
     maybeAutoSummarize();
     if(wasVoiceDriven && cfg.wakeListenAfterReply!==false){
       startVoiceSession();
-      setVoiceHud('followup','Reply done. Ask a follow-up...');
-      queueWakeResume(200);
-    }else{
+      if(cfg.ttsEnabled) pendingFollowupAfterSpeech=true;
+      else armFollowupWindow();
+    } else {
+      clearVoiceSession();
       clearVoiceHud(1400);
     }
   }catch(err){
     bubble.classList.remove('streaming');
     bubble.innerHTML=esc(friendlyError(cfg.aiProvider,err.message));
     setStatus('offline');
+    clearVoiceSession();
     if(wasVoiceDriven) queueWakeResume(300);
     clearVoiceHud(1600);
   }finally{isThinking=false;document.getElementById('send-btn').disabled=false;}

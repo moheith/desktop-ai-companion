@@ -20,6 +20,8 @@
     }
   },
   "dependencies": {
+    "@picovoice/porcupine-node": "^3.0.6",
+    "@picovoice/pvrecorder-node": "^1.2.8",
     "electron-store": "^8.1.0",
     "pixi-live2d-display": "^0.4.0",
     "pixi.js": "^6.0.0"

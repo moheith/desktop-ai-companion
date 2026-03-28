@@ -19,6 +19,8 @@ const store = new Store({
     micDeviceId:'',sttSilenceTimeoutMs:1600,sttSensitivity:0.014,
     sttHoldToTalk:false,wakeWordEnabled:false,wakeWordPhrase:'hey mascot',
     sttBilingualBias:'off',sttNoisePreset:'medium',sttMode:'chat',
+    wakeEngine:'browser',
+    porcupineAccessKey:'',porcupineKeywordPath:'',porcupineSensitivity:0.55,
     wakeWordAliases:'hi mascot, hey buddy',
     wakeFollowupEnabled:true,wakeFollowupMs:12000,wakeListenAfterReply:true,
     wakeSensitivity:0.010,wakeSpeechWindowMs:2200,wakeSilenceMs:420,

@@ -233,9 +233,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
   padding:10px 14px;border-radius:999px;background:rgba(10,10,20,0.94);border:1px solid var(--border);
   box-shadow:0 16px 40px rgba(0,0,0,0.35);backdrop-filter:blur(10px);opacity:0;pointer-events:none;
   transform:translateY(12px);transition:all 0.2s ease;
+  min-width:220px;
 }
 .voice-hud.active{opacity:1;transform:translateY(0);}
-.voice-hud-dot{width:9px;height:9px;border-radius:50%;background:var(--muted2);}
+.voice-hud-dot{width:10px;height:10px;border-radius:50%;background:var(--muted2);}
+.voice-hud-icon{font-size:15px;line-height:1;}
+.voice-hud-body{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.voice-hud-title{font-size:11px;font-family:'Space Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:1px;}
 .voice-hud[data-state="listening"] .voice-hud-dot,
 .voice-hud[data-state="wake"] .voice-hud-dot,
 .voice-hud[data-state="followup"] .voice-hud-dot{background:var(--pink);box-shadow:0 0 12px rgba(244,114,182,0.45);}
@@ -246,9 +250,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 .voice-hud-text{font-size:12px;color:var(--text2);}
 @media (max-width: 980px){
   .voice-layout,.split-row,.mini-grid,.card-grid.cols2,.card-grid.cols3{grid-template-columns:1fr;}
-  #sidebar{width:88px}
-  .nav-item .nl,.nav-section,.mood-info{display:none}
-  #mood-indicator{justify-content:center}
+  #sidebar{width:170px}
 }
 
 #page-chat{overflow:hidden;}
@@ -876,7 +878,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                   <div class="trow" style="background:var(--s2);border:1px solid var(--border);border-radius:var(--radius2);padding:10px 12px;">
                     <div class="tl">
                       <span class="tl-n">Enable wake word</span>
-                      <span class="tl-d">Best-effort browser listener that starts recording after the phrase is heard</span>
+                      <span class="tl-d">Always-on Porcupine wake engine that beeps, then starts the normal whisper.cpp capture</span>
                     </div>
                     <label class="toggle"><input type="checkbox" id="tog-stt-wake"/><div class="track"><div class="thumb"></div></div></label>
                   </div>
@@ -889,11 +891,50 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                   <input class="inp" id="stt-wake-word" placeholder="hey mascot"/>
                 </div>
                 <div class="field">
+                  <label>Wake Engine</label>
+                  <select class="inp" id="wake-engine">
+                    <option value="browser">Built-in local wake</option>
+                    <option value="porcupine">Porcupine (advanced)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
                   <label>Mode</label>
                   <select class="inp" id="stt-mode">
                     <option value="chat">Chat mode</option>
                     <option value="command">Command mode</option>
                   </select>
+                </div>
+                <div class="field">
+                  <label>Wake Runtime</label>
+                  <div class="hint" style="padding-top:6px;">Use `Built-in local wake` for no-key setup. Use `Porcupine` only if you want a dedicated external wake engine.</div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Porcupine Access Key</label>
+                  <input class="inp" id="porcupine-access-key" placeholder="Paste your Picovoice access key"/>
+                </div>
+                <div class="field">
+                  <label>Wake Keyword File (.ppn)</label>
+                  <input class="inp" id="porcupine-keyword-path" placeholder="C:\desktop-mascot\mic\porcupine\hey-mascot_windows.ppn"/>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Porcupine Sensitivity</label>
+                  <div class="slider-row" style="gap:4px;">
+                    <div class="slider-top"><span class="slider-label">Wake trigger strength</span><span class="slider-val" id="porcupine-sensitivity-val">0.55</span></div>
+                    <input type="range" id="porcupine-sensitivity" min="0.20" max="0.95" step="0.01" value="0.55"/>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Wake Runtime</label>
+                  <div class="hint" style="padding-top:6px;">Porcupine needs an AccessKey and a custom `.ppn` keyword file for `hey mascot`.</div>
                 </div>
               </div>
 
@@ -1152,7 +1193,11 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 </div>
 <div class="voice-hud" id="voice-hud" data-state="idle">
   <span class="voice-hud-dot"></span>
-  <span class="voice-hud-text" id="voice-hud-text">Listening...</span>
+  <span class="voice-hud-icon" id="voice-hud-icon">🎙</span>
+  <span class="voice-hud-body">
+    <span class="voice-hud-title" id="voice-hud-title">Voice</span>
+    <span class="voice-hud-text" id="voice-hud-text">Listening...</span>
+  </span>
 </div>
 
 <script src="control.js"></script>

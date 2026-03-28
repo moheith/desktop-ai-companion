@@ -79,6 +79,8 @@ The app supports two speech-to-text modes:
 
 * `Local whisper.cpp` for free offline transcription
 * `OpenAI Whisper` as a cloud fallback
+* Built-in local wake-word mode with no key required
+* Optional `Porcupine` wake-word mode for advanced setups
 
 ### Local whisper.cpp
 
@@ -131,6 +133,36 @@ If you prefer cloud transcription:
 2. Add your API key
 3. In `Voice Settings`, choose `OpenAI Whisper`
 4. Save
+
+### Wake Word Options
+
+The app now supports two wake-word paths:
+
+* `Built-in local wake`  
+  No AccessKey required. This is the default path for GitHub users and packaged builds.
+* `Porcupine`  
+  Optional advanced path if you want to supply a Picovoice `AccessKey` and a `.ppn` keyword file.
+
+### Porcupine Wake Word
+
+For reliable `hey mascot` wake detection, the app now supports Picovoice Porcupine instead of the older browser-based wake listener.
+
+What you need:
+
+* a Picovoice `AccessKey`
+* a custom Porcupine keyword file (`.ppn`) for your chosen wake phrase, such as `hey mascot`
+
+Then in the app:
+
+1. Open `Voice Settings`
+2. Enable `Microphone`
+3. Keep `STT Engine` on `Local whisper.cpp`
+4. Turn on `Wake word`
+5. Paste your Porcupine `AccessKey`
+6. Add the full path to your `.ppn` keyword file
+7. Save Voice Settings
+
+Wake-word detection is offline after setup. If you also use Ollama and local TTS, the full voice loop can run offline.
 
 ---
 
