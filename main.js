@@ -23,7 +23,7 @@ const store = new Store({
     porcupineAccessKey:'',porcupineKeywordPath:'',porcupineSensitivity:0.55,
     wakeWordAliases:'hi mascot, hey buddy',
     wakeFollowupEnabled:true,wakeFollowupMs:12000,wakeListenAfterReply:true,
-    wakeSensitivity:0.010,wakeSpeechWindowMs:2200,wakeSilenceMs:420,
+    wakeSensitivity:0.008,wakeSpeechWindowMs:1400,wakeSilenceMs:260,
     voiceHudEnabled:true,voiceInterruptEnabled:true,
     voiceIntentRouting:'hybrid',voiceConfirmActions:true,
     voiceCommandTraining:'',ambientNoiseFloor:0,

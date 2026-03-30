@@ -67,7 +67,7 @@ let cfg={
   porcupineAccessKey:'',porcupineKeywordPath:'',porcupineSensitivity:0.55,
   wakeWordAliases:'hi mascot, hey buddy',
   wakeFollowupEnabled:true,wakeFollowupMs:12000,wakeListenAfterReply:true,
-  wakeSensitivity:0.010,wakeSpeechWindowMs:2200,wakeSilenceMs:420,
+  wakeSensitivity:0.008,wakeSpeechWindowMs:1400,wakeSilenceMs:260,
   voiceHudEnabled:true,voiceInterruptEnabled:true,
   voiceIntentRouting:'hybrid',voiceConfirmActions:true,
   voiceCommandTraining:'',ambientNoiseFloor:0,
@@ -92,6 +92,10 @@ let porcupineHandle=null, porcupineRecorder=null, porcupineLoopActive=false, por
 let micInputSnapshot='';
 let lastVoiceIntent=null,voiceSessionUntil=0,voiceSessionPrimed=false,voiceListeningMode='manual',wakeResumeTimer=null;
 let pendingFollowupAfterSpeech=false,awaitingFollowup=false,followupArmUntil=0,followupTimeoutTimer=null;
+let lastWakeTriggerAt=0;
+const WAKE_TRIGGER_COOLDOWN_MS=2500;
+let listeningStartedAt=0;
+let wakeListeningStartedAt=0;
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -966,6 +970,18 @@ function stopWakeWordListener(){
 
 function wakeDebug(){}
 
+function triggerWakeCue(){
+  const now=Date.now();
+  if(now-lastWakeTriggerAt<WAKE_TRIGGER_COOLDOWN_MS) return;
+  lastWakeTriggerAt=now;
+  playCue('wake');
+  showInterim('Wake word detected');
+  setVoiceHud('wake',`Detected "${cfg.wakeWordPhrase||'hey mascot'}"`);
+  showToast('Wake word detected');
+  setTimeout(()=>showInterim(''),1500);
+  clearVoiceHud(1600);
+}
+
 function isWakeMatch(text){
   const normalized=normalizeVoiceText(text);
   if(!normalized) return false;
@@ -982,15 +998,17 @@ function isWakeMatch(text){
 
 function triggerWakeListening(){
   wakeDebug('triggered');
+  const now=Date.now();
+  if(now-lastWakeTriggerAt<WAKE_TRIGGER_COOLDOWN_MS) return;
+  lastWakeTriggerAt=now;
   voiceListeningMode='wake';
-  startVoiceSession();
   if(cfg.voiceInterruptEnabled!==false && ttsBusy) stopTTS();
   playCue('wake');
   showInterim('Wake word detected. Listening...');
-  setVoiceHud('wake','Wake detected. Listening...');
+  setVoiceHud('listening','Listening after wake word...');
   showToast('Wake word detected');
   stopWakeWordListener();
-  setTimeout(()=>startListening(),20);
+  setTimeout(()=>startListening(),80);
 }
 
 function trimWakeChunks(maxSamples=16000*5){
@@ -1005,35 +1023,8 @@ async function processWakeTranscript(text){
   const heard=(text||'').trim();
   wakeDebug('wake-transcript', heard);
   if(!heard) return;
-  if(isFollowupWindowActive()){
-    awaitingFollowup=false;
-    clearTimeout(followupTimeoutTimer);
-    voiceListeningMode='followup';
-    showInterim('Follow-up detected. Listening...');
-    setVoiceHud('followup','Follow-up detected. Listening...');
-    stopWakeWordListener();
-    setTimeout(()=>startListening(),20);
-    return;
-  }
   if(!isWakeMatch(heard)) return;
-  const cleaned=stripWakePhrase(heard);
-  if(!cleaned){
-    triggerWakeListening();
-    return;
-  }
-  playCue('wake');
-  showInterim(`Heard: ${cleaned}`);
-  const consumed=await handleVoiceTranscript(cleaned,{skipWake:true,applyToInput:true});
-  if(cfg.sttMode==='chat' && !consumed){
-    const inp=document.getElementById('chat-input');
-    if(inp){
-      inp.value=cleaned;
-      inp.style.height='auto';
-      inp.style.height=Math.min(inp.scrollHeight,100)+'px';
-    }
-    hideTranscriptPreview(true);
-    setTimeout(()=>send(),120);
-  }
+  triggerWakeListening();
 }
 
 async function flushWakeMonitor(){
@@ -1084,16 +1075,16 @@ async function setupWakeWordListener(){
         for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
         const rms=Math.sqrt(sum/input.length);
         const chunkMs=(input.length/(wakeMonitorContext?.sampleRate||16000))*1000;
-        const threshold=Math.max(0.006,Math.min(cfg.wakeSensitivity||((cfg.sttSensitivity||0.014)*0.7),0.03));
+        const threshold=Math.max(0.005,Math.min(cfg.wakeSensitivity||((cfg.sttSensitivity||0.014)*0.6),0.025));
         if(rms>threshold){
           wakeMonitorHeardSpeech=true;
           wakeMonitorSpeechMs+=chunkMs;
           wakeMonitorSilenceMs=0;
         }else if(wakeMonitorHeardSpeech){
           wakeMonitorSilenceMs+=chunkMs;
-          if(wakeMonitorSilenceMs>=(cfg.wakeSilenceMs||420)) flushWakeMonitor();
+          if(wakeMonitorSilenceMs>=(cfg.wakeSilenceMs||260)) flushWakeMonitor();
         }
-        if(wakeMonitorHeardSpeech && wakeMonitorSpeechMs>=(cfg.wakeSpeechWindowMs||2200)) flushWakeMonitor();
+        if(wakeMonitorHeardSpeech && wakeMonitorSpeechMs>=(cfg.wakeSpeechWindowMs||1400)) flushWakeMonitor();
       };
       wakeMonitorSource.connect(wakeMonitorProcessor);
       wakeMonitorProcessor.connect(wakeMonitorSilencer);
@@ -1128,7 +1119,6 @@ async function setupWakeWordListener(){
         const keywordIndex=porcupineHandle.process(frame);
         if(keywordIndex>=0){
           triggerWakeListening();
-          break;
         }
       }
     })().catch(err=>{
@@ -1311,7 +1301,10 @@ function processTTSQueue(){
       pendingFollowupAfterSpeech=false;
       armFollowupWindow();
     } else if(isFollowupWindowActive()) setVoiceHud('followup','Ask a follow-up now...');
-    else clearVoiceHud(600);
+    else {
+      clearVoiceHud(600);
+      if(cfg.wakeWordEnabled && !isListening && !isThinking) queueWakeResume(120);
+    }
     return;
   }
   ttsBusy=true;setBadge('speaking');
@@ -1335,6 +1328,7 @@ function stopTTS(){
     pendingFollowupAfterSpeech=false;
     armFollowupWindow();
   } else if(isFollowupWindowActive()) queueWakeResume(150);
+  else if(cfg.wakeWordEnabled && !isListening && !isThinking) queueWakeResume(120);
 }
 function setBadge(state){
   const b=document.getElementById('tts-badge');if(!b)return;
@@ -1919,6 +1913,8 @@ async function startListening(){
     recordingSeconds=0;
     silenceMs=0;
     heardSpeech=false;
+    listeningStartedAt=Date.now();
+    wakeListeningStartedAt=voiceListeningMode==='wake' ? listeningStartedAt : 0;
     isListening=true;
     audioProcessor.onaudioprocess=e=>{
       if(!isListening) return;
@@ -1928,12 +1924,21 @@ async function startListening(){
       for(let i=0;i<input.length;i++) sum+=input[i]*input[i];
       const rms=Math.sqrt(sum/input.length);
       const chunkMs=(input.length/(audioContext?.sampleRate||16000))*1000;
-      if(rms>(cfg.sttSensitivity||0.014)){
+      const speechThreshold=Math.max(0.006,Number(cfg.sttSensitivity||0.014));
+      const silenceThreshold=Math.max(0.0045, speechThreshold*0.72);
+      if(rms>speechThreshold){
         heardSpeech=true;
         silenceMs=0;
-      }else if(heardSpeech){
+      }else if(heardSpeech && rms<silenceThreshold){
         silenceMs+=chunkMs;
         if(cfg.autoMicStop!==false && silenceMs>=(cfg.sttSilenceTimeoutMs||1600)){
+          stopListening(true);
+        }
+      }else if(heardSpeech){
+        silenceMs=0;
+      }else if(voiceListeningMode==='wake' && cfg.autoMicStop!==false){
+        const activeFor=Date.now()-wakeListeningStartedAt;
+        if(wakeListeningStartedAt && activeFor>=(cfg.sttSilenceTimeoutMs||1600)+2200){
           stopListening(true);
         }
       }
@@ -1958,25 +1963,31 @@ function stopListening(sendAudio=true){
   if(!isListening&&!sendAudio){
     cleanupRecording();
     showInterim('');
-    pcmChunks=[];
-    clearVoiceHud();
-    queueWakeResume(120);
-    voiceListeningMode='manual';
-    return;
-  }
+  pcmChunks=[];
+  clearVoiceHud();
+  queueWakeResume(120);
+  voiceListeningMode='manual';
+  listeningStartedAt=0;
+  wakeListeningStartedAt=0;
+  return;
+}
   isListening=false;
   if(!sendAudio){
     cleanupRecording();
     showInterim('');
-    pcmChunks=[];
-    clearVoiceHud();
-    queueWakeResume(120);
-    voiceListeningMode='manual';
-    return;
-  }
+  pcmChunks=[];
+  clearVoiceHud();
+  queueWakeResume(120);
+  voiceListeningMode='manual';
+  listeningStartedAt=0;
+  wakeListeningStartedAt=0;
+  return;
+}
   const recordedChunks=pcmChunks;
   pcmChunks=[];
   cleanupRecording();
+  listeningStartedAt=0;
+  wakeListeningStartedAt=0;
   if(!recordedChunks.length){
     showInterim('Nothing recorded - try again');
     setTimeout(()=>showInterim(''),2500);
@@ -2379,20 +2390,15 @@ async function send(){
     ipcRenderer.send('save-chat-history',chatHistory);
     autoLearn(fullReply);setStatus('ready');
     maybeAutoSummarize();
-    if(wasVoiceDriven && cfg.wakeListenAfterReply!==false){
-      startVoiceSession();
-      if(cfg.ttsEnabled) pendingFollowupAfterSpeech=true;
-      else armFollowupWindow();
-    } else {
-      clearVoiceSession();
-      clearVoiceHud(1400);
-    }
+    clearVoiceSession();
+    clearVoiceHud(1400);
+    if(wasVoiceDriven || cfg.wakeWordEnabled) queueWakeResume(250);
   }catch(err){
     bubble.classList.remove('streaming');
     bubble.innerHTML=esc(friendlyError(cfg.aiProvider,err.message));
     setStatus('offline');
     clearVoiceSession();
-    if(wasVoiceDriven) queueWakeResume(300);
+    if(wasVoiceDriven || cfg.wakeWordEnabled) queueWakeResume(300);
     clearVoiceHud(1600);
   }finally{isThinking=false;document.getElementById('send-btn').disabled=false;}
 }
