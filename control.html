@@ -1055,15 +1055,167 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
                 </div>
               </div>
 
-              <div class="hint" style="display:none;">
-                Uses <b>OpenAI Whisper</b> — works in all Electron versions, far more accurate than browser speech recognition.
-                Cost: ~$0.006/minute. Reuses your OpenAI key automatically.
+              <div class="card-header" style="margin:8px 0 10px;">Wake Tuning</div>
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Wake Speech Threshold</label>
+                  <div class="slider-row" style="gap:4px;">
+                    <div class="slider-top"><span class="slider-label">Trigger threshold</span><span class="slider-val" id="wake-sensitivity-val">0.008</span></div>
+                    <input type="range" id="wake-sensitivity" min="0.005" max="0.030" step="0.001" value="0.008"/>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Wake Speech Window</label>
+                  <div class="slider-row" style="gap:4px;">
+                    <div class="slider-top"><span class="slider-label">Max phrase length</span><span class="slider-val" id="wake-window-ms-val">1.4s</span></div>
+                    <input type="range" id="wake-window-ms" min="800" max="2600" step="100" value="1400"/>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-header" style="margin:8px 0 10px;">Wake Behavior</div>
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Wake Aliases</label>
+                  <input class="inp" id="stt-wake-aliases" placeholder="hi mascot, hey buddy"/>
+                </div>
+                <div class="field">
+                  <label>Wake Rearm Delay</label>
+                  <div class="slider-row" style="gap:4px;">
+                    <div class="slider-top"><span class="slider-label">Session timeout</span><span class="slider-val" id="wake-followup-ms-val">12s</span></div>
+                    <input type="range" id="wake-followup-ms" min="2000" max="20000" step="500" value="12000"/>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="trow">
+                      <div class="tl">
+                        <span class="tl-n">Enable follow-up window</span>
+                        <span class="tl-d">Keep a short wake session after a voice-driven turn</span>
+                      </div>
+                      <label class="toggle"><input type="checkbox" id="tog-wake-followup"/><div class="track"><div class="thumb"></div></div></label>
+                    </div>
+                  </div>
+                </div>
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="trow">
+                      <div class="tl">
+                        <span class="tl-n">Rearm after reply</span>
+                        <span class="tl-d">Start wake listening again after a completed response</span>
+                      </div>
+                      <label class="toggle"><input type="checkbox" id="tog-wake-listen-reply"/><div class="track"><div class="thumb"></div></div></label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="trow">
+                      <div class="tl">
+                        <span class="tl-n">Rearm right after send</span>
+                        <span class="tl-d">Re-arm wake detection as soon as the transcribed message is sent to chat</span>
+                      </div>
+                      <label class="toggle"><input type="checkbox" id="tog-wake-rearm-send"/><div class="track"><div class="thumb"></div></div></label>
+                    </div>
+                  </div>
+                </div>
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="tl">
+                      <span class="tl-n">Wake Monitor</span>
+                      <span class="tl-d">Shows the current wake-listener state and the last detected phrase</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-header" style="margin:8px 0 10px;">Voice Intelligence</div>
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="field">
+                  <label>Intent Routing</label>
+                  <select class="inp" id="voice-intent-routing">
+                    <option value="hybrid">Hybrid</option>
+                    <option value="rules">Rules only</option>
+                    <option value="off">Off</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Custom Voice Commands</label>
+                  <textarea class="inp" id="voice-command-training" placeholder="study mode => open memory"></textarea>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="trow">
+                      <div class="tl">
+                        <span class="tl-n">Voice HUD</span>
+                        <span class="tl-d">Show the floating listening/transcribing status pill</span>
+                      </div>
+                      <label class="toggle"><input type="checkbox" id="tog-voice-hud"/><div class="track"><div class="thumb"></div></div></label>
+                    </div>
+                  </div>
+                </div>
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="trow">
+                      <div class="tl">
+                        <span class="tl-n">Voice interruption</span>
+                        <span class="tl-d">Allow voice commands like stop talking</span>
+                      </div>
+                      <label class="toggle"><input type="checkbox" id="tog-voice-interrupt"/><div class="track"><div class="thumb"></div></div></label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-grid cols2" style="margin-bottom:12px;">
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body">
+                    <div class="trow">
+                      <div class="tl">
+                        <span class="tl-n">Command confirmation</span>
+                        <span class="tl-d">Ask for confirmation before risky voice actions</span>
+                      </div>
+                      <label class="toggle"><input type="checkbox" id="tog-voice-confirm"/><div class="track"><div class="thumb"></div></div></label>
+                    </div>
+                  </div>
+                </div>
+                <div class="card" style="margin-bottom:0;">
+                  <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                    <div class="tl">
+                      <span class="tl-n">Mic calibration</span>
+                      <span class="tl-d">Auto-tune the mic threshold from your room noise</span>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" id="voice-calibrate-btn">Calibrate</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-header" style="margin:8px 0 10px;">Diagnostics</div>
+              <div class="subtle-box" style="margin-bottom:10px;">
+                <div style="font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Wake Monitor</div>
+                <div id="wake-monitor-text" style="font-size:13px;color:var(--text2);line-height:1.6;min-height:22px;">Listening for wake phrase...</div>
+              </div>
+              <div class="mini-grid" style="margin-bottom:8px;">
+                <div class="metric"><div class="k">Speech Engine</div><div class="v" id="voice-metric-engine">Local whisper.cpp</div><div class="s">Current STT backend</div></div>
+                <div class="metric"><div class="k">Wake Word</div><div class="v" id="voice-metric-wake">Off</div><div class="s">Current wake status</div></div>
+                <div class="metric"><div class="k">Intent Routing</div><div class="v" id="voice-metric-routing">Hybrid</div><div class="s">Voice command interpretation mode</div></div>
+                <div class="metric"><div class="k">Runtime</div><div class="v" id="voice-metric-runtime">Idle</div><div class="s">Live mic state</div></div>
               </div>
             </div>
           </div>
 
           <div class="btn-row" id="mic-save-row">
             <button class="btn btn-primary" id="mic-save-btn">💾 Save Mic Settings</button>
+            <button class="btn btn-secondary" id="mic-reset-btn">Reset Mic Settings</button>
             <span class="flash-ok" id="mic-save-ok">✓ Saved!</span>
           </div>
         </div>

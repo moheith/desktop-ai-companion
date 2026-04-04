@@ -67,6 +67,7 @@ let cfg={
   porcupineAccessKey:'',porcupineKeywordPath:'',porcupineSensitivity:0.55,
   wakeWordAliases:'hi mascot, hey buddy',
   wakeFollowupEnabled:true,wakeFollowupMs:12000,wakeListenAfterReply:true,
+  wakeRearmAfterSend:false,
   wakeSensitivity:0.008,wakeSpeechWindowMs:1400,wakeSilenceMs:260,
   voiceHudEnabled:true,voiceInterruptEnabled:true,
   voiceIntentRouting:'hybrid',voiceConfirmActions:true,
@@ -94,8 +95,40 @@ let lastVoiceIntent=null,voiceSessionUntil=0,voiceSessionPrimed=false,voiceListe
 let pendingFollowupAfterSpeech=false,awaitingFollowup=false,followupArmUntil=0,followupTimeoutTimer=null;
 let lastWakeTriggerAt=0;
 const WAKE_TRIGGER_COOLDOWN_MS=2500;
+const WAKE_MIN_SPEECH_MS=320;
 let listeningStartedAt=0;
 let wakeListeningStartedAt=0;
+let wakeMonitorPreview='Listening for wake phrase...';
+const MIC_RESET_DEFAULTS={
+  sttEnabled:false,
+  sttEngine:'openai',
+  sttLanguage:'auto',
+  autoMicStop:true,
+  autoMicSend:true,
+  micDeviceId:'',
+  sttSilenceTimeoutMs:1600,
+  sttSensitivity:0.014,
+  sttHoldToTalk:false,
+  wakeWordEnabled:false,
+  wakeWordPhrase:'hey mascot',
+  wakeEngine:'browser',
+  sttBilingualBias:'off',
+  sttNoisePreset:'medium',
+  sttMode:'chat',
+  wakeWordAliases:'hi mascot, hey buddy',
+  wakeFollowupEnabled:true,
+  wakeFollowupMs:12000,
+  wakeListenAfterReply:true,
+  wakeSensitivity:0.008,
+  wakeSpeechWindowMs:1400,
+  wakeSilenceMs:260,
+  voiceHudEnabled:true,
+  voiceInterruptEnabled:true,
+  voiceIntentRouting:'hybrid',
+  voiceConfirmActions:true,
+  voiceCommandTraining:'',
+  ambientNoiseFloor:0,
+};
 
 // ─── Init ─────────────────────────────────────────────────
 ipcRenderer.on('init-config',(_, s)=>{
@@ -160,6 +193,7 @@ function applyConfig(){
   tv('wake-followup-ms-val',`${Math.round((cfg.wakeFollowupMs||12000)/1000)}s`);
   ck('tog-wake-followup',cfg.wakeFollowupEnabled!==false);
   ck('tog-wake-listen-reply',cfg.wakeListenAfterReply!==false);
+  ck('tog-wake-rearm-send',cfg.wakeRearmAfterSend===true);
   ck('tog-voice-hud',cfg.voiceHudEnabled!==false);
   ck('tog-voice-interrupt',cfg.voiceInterruptEnabled!==false);
   ck('tog-voice-confirm',cfg.voiceConfirmActions!==false);
@@ -226,6 +260,7 @@ function switchPage(pg){
   if(pg==='chat'){checkOllamaStatus();setTimeout(scrollChat,100);}
   if(pg==='home')updateHomeCards();
   if(pg==='memory')renderMemoryPage();
+  if(pg==='mic'){updateSTTUI();ensureWakeListenerArmed();}
 }
 document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>switchPage(n.dataset.page));
 
@@ -237,6 +272,7 @@ function setupSplitSettingsPages(){
   if(micSlot&&micSaveRow&&micSaveRow.parentElement!==micSlot) micSlot.appendChild(micSaveRow);
 }
 setupSplitSettingsPages();
+setInterval(()=>ensureWakeListenerArmed(),2000);
 
 // ─── Window buttons ───────────────────────────────────────
 document.getElementById('btn-close').onclick=()=>ipcRenderer.send('close-panel');
@@ -565,6 +601,98 @@ function queueWakeResume(delay=0){
   wakeResumeTimer=setTimeout(()=>{
     if(cfg.wakeWordEnabled && !isListening && !isThinking && !ttsBusy && !pendingFollowupAfterSpeech) setupWakeWordListener();
   },delay);
+}
+
+function queueWakeResumeFlexible(delay=0,{allowThinking=false}={}){
+  clearTimeout(wakeResumeTimer);
+  wakeResumeTimer=setTimeout(()=>{
+    if(!cfg.wakeWordEnabled || isListening || ttsBusy || pendingFollowupAfterSpeech) return;
+    if(isThinking && !allowThinking) return;
+    setupWakeWordListener();
+  },delay);
+}
+
+function isWakeListenerActive(){
+  if(getWakeEngine()==='porcupine'){
+    return !!(porcupineLoopActive && porcupineRecorder?.isRecording);
+  }
+  return !!(wakeMonitorStream && wakeMonitorProcessor && wakeMonitorContext);
+}
+
+function ensureWakeListenerArmed(){
+  if(!cfg.sttEnabled || !cfg.wakeWordEnabled) return;
+  if(isListening || isThinking || ttsBusy || pendingFollowupAfterSpeech) return;
+  if(isWakeListenerActive()) return;
+  setupWakeWordListener();
+}
+
+function setWakeMonitorPreview(text){
+  wakeMonitorPreview=text||'';
+  const el=document.getElementById('wake-monitor-text');
+  if(el) el.textContent=wakeMonitorPreview||'Idle';
+}
+
+function applyMicConfigToInputs(){
+  ck('tog-stt',cfg.sttEnabled);
+  setEl('stt-engine',cfg.sttEngine||'openai');
+  setEl('stt-language',cfg.sttLanguage||'auto');
+  ck('tog-stt-auto-stop',cfg.autoMicStop!==false);
+  ck('tog-stt-auto-send',cfg.autoMicSend!==false);
+  ck('tog-stt-hold',!!cfg.sttHoldToTalk);
+  ck('tog-stt-wake',!!cfg.wakeWordEnabled);
+  setEl('stt-wake-word',cfg.wakeWordPhrase||'hey mascot');
+  setEl('wake-engine',cfg.wakeEngine||'browser');
+  setEl('stt-wake-aliases',cfg.wakeWordAliases||'');
+  setEl('porcupine-access-key',cfg.porcupineAccessKey||'');
+  setEl('porcupine-keyword-path',cfg.porcupineKeywordPath||'');
+  setEl('porcupine-sensitivity',cfg.porcupineSensitivity||0.55);
+  tv('porcupine-sensitivity-val',Number(cfg.porcupineSensitivity||0.55).toFixed(2));
+  setEl('stt-bilingual-bias',cfg.sttBilingualBias||'off');
+  setEl('stt-noise-preset',cfg.sttNoisePreset||'medium');
+  setEl('stt-mode',cfg.sttMode||'chat');
+  setEl('stt-device',cfg.micDeviceId||'');
+  setEl('stt-silence-timeout',cfg.sttSilenceTimeoutMs||1600);
+  tv('stt-silence-timeout-val',`${Math.round((cfg.sttSilenceTimeoutMs||1600)/100)/10}s`);
+  setEl('stt-sensitivity',cfg.sttSensitivity||0.014);
+  tv('stt-sensitivity-val',Number(cfg.sttSensitivity||0.014).toFixed(3));
+  setEl('wake-sensitivity',cfg.wakeSensitivity||0.008);
+  tv('wake-sensitivity-val',Number(cfg.wakeSensitivity||0.008).toFixed(3));
+  setEl('wake-window-ms',cfg.wakeSpeechWindowMs||1400);
+  tv('wake-window-ms-val',`${Math.round((cfg.wakeSpeechWindowMs||1400)/100)/10}s`);
+  setEl('wake-followup-ms',cfg.wakeFollowupMs||12000);
+  tv('wake-followup-ms-val',`${Math.round((cfg.wakeFollowupMs||12000)/1000)}s`);
+  ck('tog-wake-followup',cfg.wakeFollowupEnabled!==false);
+  ck('tog-wake-listen-reply',cfg.wakeListenAfterReply!==false);
+  ck('tog-wake-rearm-send',cfg.wakeRearmAfterSend===true);
+  ck('tog-voice-hud',cfg.voiceHudEnabled!==false);
+  ck('tog-voice-interrupt',cfg.voiceInterruptEnabled!==false);
+  ck('tog-voice-confirm',cfg.voiceConfirmActions!==false);
+  setEl('voice-intent-routing',cfg.voiceIntentRouting||'hybrid');
+  setEl('voice-command-training',cfg.voiceCommandTraining||'');
+  setEl('whispercpp-path',cfg.whisperCppPath||'');
+  setEl('whispercpp-model',cfg.whisperCppModel||'');
+  setWakeMonitorPreview(wakeMonitorPreview||'Listening for wake phrase...');
+}
+
+function resetMicSettings(){
+  const preserved={
+    whisperCppPath:cfg.whisperCppPath||'',
+    whisperCppModel:cfg.whisperCppModel||'',
+    porcupineAccessKey:cfg.porcupineAccessKey||'',
+    porcupineKeywordPath:cfg.porcupineKeywordPath||'',
+    porcupineSensitivity:cfg.porcupineSensitivity||0.55,
+    micProfiles:cfg.micProfiles||{},
+  };
+  stopListening(false);
+  cancelTranscription();
+  stopWakeWordListener();
+  Object.assign(cfg,MIC_RESET_DEFAULTS,preserved);
+  applyMicConfigToInputs();
+  updateSTTUI();
+  setupMic();
+  ipcRenderer.send('save-config',{...cfg});
+  flash('mic-save-ok');
+  showToast('Mic settings reset');
 }
 
 function getPorcupineKeywordPath(){
@@ -978,6 +1106,7 @@ function triggerWakeCue(){
   showInterim('Wake word detected');
   setVoiceHud('wake',`Detected "${cfg.wakeWordPhrase||'hey mascot'}"`);
   showToast('Wake word detected');
+  setWakeMonitorPreview(`Matched wake phrase: ${cfg.wakeWordPhrase||'hey mascot'}`);
   setTimeout(()=>showInterim(''),1500);
   clearVoiceHud(1600);
 }
@@ -1023,12 +1152,20 @@ async function processWakeTranscript(text){
   const heard=(text||'').trim();
   wakeDebug('wake-transcript', heard);
   if(!heard) return;
+  setWakeMonitorPreview(`Heard: ${heard}`);
   if(!isWakeMatch(heard)) return;
   triggerWakeListening();
 }
 
 async function flushWakeMonitor(){
   if(wakeMonitorTranscribing || !wakeMonitorChunks.length || isListening) return;
+  if(wakeMonitorSpeechMs<WAKE_MIN_SPEECH_MS){
+    wakeMonitorChunks=[];
+    wakeMonitorSpeechMs=0;
+    wakeMonitorSilenceMs=0;
+    wakeMonitorHeardSpeech=false;
+    return;
+  }
   const clip=makeWavBlob(wakeMonitorChunks,16000);
   wakeMonitorChunks=[];
   wakeMonitorSpeechMs=0;
@@ -1080,6 +1217,7 @@ async function setupWakeWordListener(){
           wakeMonitorHeardSpeech=true;
           wakeMonitorSpeechMs+=chunkMs;
           wakeMonitorSilenceMs=0;
+          if(wakeMonitorSpeechMs>=WAKE_MIN_SPEECH_MS*0.5) setWakeMonitorPreview('Speech detected...');
         }else if(wakeMonitorHeardSpeech){
           wakeMonitorSilenceMs+=chunkMs;
           if(wakeMonitorSilenceMs>=(cfg.wakeSilenceMs||260)) flushWakeMonitor();
@@ -1089,6 +1227,7 @@ async function setupWakeWordListener(){
       wakeMonitorSource.connect(wakeMonitorProcessor);
       wakeMonitorProcessor.connect(wakeMonitorSilencer);
       wakeMonitorSilencer.connect(wakeMonitorContext.destination);
+      setWakeMonitorPreview(`Armed for "${cfg.wakeWordPhrase||'hey mascot'}"`);
       setVoiceHud('wake',`Wake armed for "${cfg.wakeWordPhrase||'hey mascot'}"`);
       updateSTTUI();
       return;
@@ -1110,6 +1249,7 @@ async function setupWakeWordListener(){
     porcupineRecorder=deviceIndex>=0 ? new PvRecorder(frameLength, deviceIndex) : new PvRecorder(frameLength);
     porcupineRecorder.start();
     porcupineLoopActive=true;
+    setWakeMonitorPreview(`Porcupine armed for "${cfg.wakeWordPhrase||'hey mascot'}"`);
     setVoiceHud('wake',`Wake armed for "${cfg.wakeWordPhrase||'hey mascot'}"`);
     updateSTTUI();
     (async ()=>{
@@ -1250,6 +1390,7 @@ function saveMicSettings(){
   cfg.wakeFollowupEnabled=document.getElementById('tog-wake-followup')?.checked!==false;
   cfg.wakeFollowupMs=parseInt(val('wake-followup-ms')||'12000',10);
   cfg.wakeListenAfterReply=document.getElementById('tog-wake-listen-reply')?.checked!==false;
+  cfg.wakeRearmAfterSend=document.getElementById('tog-wake-rearm-send')?.checked===true;
   cfg.voiceHudEnabled=document.getElementById('tog-voice-hud')?.checked!==false;
   cfg.voiceInterruptEnabled=document.getElementById('tog-voice-interrupt')?.checked!==false;
   cfg.voiceConfirmActions=document.getElementById('tog-voice-confirm')?.checked!==false;
@@ -1266,6 +1407,7 @@ function saveMicSettings(){
 
 document.getElementById('voice-save-btn').onclick=saveVoiceSettings;
 document.getElementById('mic-save-btn').onclick=saveMicSettings;
+document.getElementById('mic-reset-btn').onclick=resetMicSettings;
 
 // ─── TTS ──────────────────────────────────────────────────
 const MOOD_TTS={
@@ -1990,6 +2132,7 @@ function stopListening(sendAudio=true){
   wakeListeningStartedAt=0;
   if(!recordedChunks.length){
     showInterim('Nothing recorded - try again');
+    queueWakeResume(250);
     setTimeout(()=>showInterim(''),2500);
     return;
   }
@@ -2099,6 +2242,9 @@ document.getElementById('stt-noise-preset')?.addEventListener('change',e=>{
 document.getElementById('stt-mode')?.addEventListener('change',e=>{
   cfg.sttMode=e.target.value||'chat';
   updateSTTUI();
+});
+document.getElementById('tog-wake-rearm-send')?.addEventListener('change',e=>{
+  cfg.wakeRearmAfterSend=e.target.checked;
 });
 document.getElementById('wake-engine')?.addEventListener('change',e=>{
   cfg.wakeEngine=e.target.value||'browser';
@@ -2356,6 +2502,7 @@ async function send(){
   chatHistory.push({role:'user',content:text});
   isThinking=true;document.getElementById('send-btn').disabled=true;setStatus('think');
   setVoiceHud('thinking','Thinking...');
+  if(wasVoiceDriven && cfg.wakeRearmAfterSend===true) queueWakeResumeFlexible(120,{allowThinking:true});
 
   document.getElementById('chat-empty').style.display='none';
   const wrap=document.getElementById('chat-messages');
