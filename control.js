@@ -96,9 +96,11 @@ let pendingFollowupAfterSpeech=false,awaitingFollowup=false,followupArmUntil=0,f
 let lastWakeTriggerAt=0;
 const WAKE_TRIGGER_COOLDOWN_MS=2500;
 const WAKE_MIN_SPEECH_MS=320;
+const WAKE_HISTORY_LIMIT=8;
 let listeningStartedAt=0;
 let wakeListeningStartedAt=0;
 let wakeMonitorPreview='Listening for wake phrase...';
+let wakeHistory=[];
 const MIC_RESET_DEFAULTS={
   sttEnabled:false,
   sttEngine:'openai',
@@ -218,6 +220,7 @@ function applyConfig(){
   ck('tog-mascot',cfg.mascotVisible);ck('tog-click',cfg.clickThrough);
   ck('tog-border',cfg.borderVisible);ck('tog-ontop',cfg.alwaysOnTop);ck('tog-taskbar',cfg.behindTaskbar);
   // Chat font
+  renderWakeHistory();
   currentFontSize=cfg.chatFontSize||14;
   tv('font-size-display',currentFontSize);tv('font-size-val',currentFontSize+'px');
   setEl('font-size-slider',currentFontSize);
@@ -268,6 +271,381 @@ function setupSplitSettingsPages(){
   const micSlot=document.getElementById('mic-page-slot');
   const micCard=document.getElementById('mic-settings-card');
   const micSaveRow=document.getElementById('mic-save-row');
+  if(micCard){
+    const micBody=micCard.querySelector('.card-body');
+    const micHeader=micCard.querySelector('.card-header');
+    if(micHeader){
+      micHeader.innerHTML=`Microphone - Powered by Whisper
+        <span class="tag tag-green" style="font-size:9px;text-transform:none;letter-spacing:0;">Push-to-Talk</span>`;
+    }
+    if(micBody && !micBody.dataset.simplified){
+      micBody.dataset.simplified='true';
+      micBody.innerHTML=`
+        <div class="trow" style="margin-bottom:14px;">
+          <div class="tl">
+            <span class="tl-n">Enable Microphone</span>
+            <span class="tl-d">Manual mic, wake word, and local transcription all start from here.</span>
+          </div>
+          <label class="toggle"><input type="checkbox" id="tog-stt"/><div class="track"><div class="thumb"></div></div></label>
+        </div>
+
+        <div class="hint" style="margin-bottom:12px;">
+          Use <b>Basic</b> for normal setup, <b>Advanced</b> for wake tuning, and <b>Diagnostics</b> when you need to debug what the wake listener heard.
+        </div>
+
+        <div class="card-header" style="margin:-2px 0 10px;">Basic</div>
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Speech Engine</label>
+            <select class="inp" id="stt-engine">
+              <option value="local">Local whisper.cpp</option>
+              <option value="openai">OpenAI Whisper</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Language</label>
+            <select class="inp" id="stt-language">
+              <option value="auto">Auto detect</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Microphone Device</label>
+            <select class="inp" id="stt-device">
+              <option value="">System default microphone</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Language Bias</label>
+            <select class="inp" id="stt-bilingual-bias">
+              <option value="off">No bias</option>
+              <option value="hi-en">Hindi + English</option>
+              <option value="en-first">Mostly English</option>
+              <option value="hi-first">Mostly Hindi</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Silence Timeout</label>
+            <div class="slider-row" style="gap:4px;">
+              <div class="slider-top"><span class="slider-label">Auto-stop delay</span><span class="slider-val" id="stt-silence-timeout-val">1.6s</span></div>
+              <input type="range" id="stt-silence-timeout" min="800" max="3500" step="100" value="1600"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Mic Sensitivity</label>
+            <div class="slider-row" style="gap:4px;">
+              <div class="slider-top"><span class="slider-label">Speech threshold</span><span class="slider-val" id="stt-sensitivity-val">0.014</span></div>
+              <input type="range" id="stt-sensitivity" min="0.006" max="0.040" step="0.001" value="0.014"/>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Press and hold to talk</span>
+                  <span class="tl-d">Use hold-to-talk instead of click-to-toggle.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-stt-hold"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Enable wake word</span>
+                  <span class="tl-d">Hands-free trigger that beeps, then starts the normal recording flow.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-stt-wake"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Auto-stop on silence</span>
+                  <span class="tl-d">Stop recording after you finish speaking.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-stt-auto-stop" checked/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Auto-send transcript</span>
+                  <span class="tl-d">Send the transcribed text immediately after capture.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-stt-auto-send" checked/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-header" style="margin:8px 0 10px;">Advanced</div>
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Wake Phrase</label>
+            <input class="inp" id="stt-wake-word" placeholder="hey mascot"/>
+          </div>
+          <div class="field">
+            <label>Wake Engine</label>
+            <select class="inp" id="wake-engine">
+              <option value="browser">Built-in local wake</option>
+              <option value="porcupine">Porcupine (advanced)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Mode</label>
+            <select class="inp" id="stt-mode">
+              <option value="chat">Chat mode</option>
+              <option value="command">Command mode</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Noise Suppression</label>
+            <select class="inp" id="stt-noise-preset">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Wake Aliases</label>
+            <input class="inp" id="stt-wake-aliases" placeholder="hi mascot, hey buddy"/>
+          </div>
+          <div class="field">
+            <label>Intent Routing</label>
+            <select class="inp" id="voice-intent-routing">
+              <option value="hybrid">Hybrid</option>
+              <option value="rules">Rules only</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Wake Speech Threshold</label>
+            <div class="slider-row" style="gap:4px;">
+              <div class="slider-top"><span class="slider-label">Trigger threshold</span><span class="slider-val" id="wake-sensitivity-val">0.008</span></div>
+              <input type="range" id="wake-sensitivity" min="0.005" max="0.030" step="0.001" value="0.008"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Wake Speech Window</label>
+            <div class="slider-row" style="gap:4px;">
+              <div class="slider-top"><span class="slider-label">Max phrase length</span><span class="slider-val" id="wake-window-ms-val">1.4s</span></div>
+              <input type="range" id="wake-window-ms" min="800" max="2600" step="100" value="1400"/>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="field">
+            <label>Wake Follow-up Window</label>
+            <div class="slider-row" style="gap:4px;">
+              <div class="slider-top"><span class="slider-label">Session timeout</span><span class="slider-val" id="wake-followup-ms-val">12s</span></div>
+              <input type="range" id="wake-followup-ms" min="2000" max="20000" step="500" value="12000"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Custom Voice Commands</label>
+            <textarea class="inp" id="voice-command-training" placeholder="study mode => open memory"></textarea>
+          </div>
+        </div>
+
+        <div id="wake-browser-box" class="hint" style="margin-bottom:12px;">
+          Built-in local wake uses your current microphone plus local whisper transcription. No AccessKey or extra files are required.
+        </div>
+
+        <div class="card-grid cols2" id="wake-porcupine-box" style="display:none;margin-bottom:12px;">
+          <div class="field">
+            <label>Porcupine Access Key</label>
+            <input class="inp" id="porcupine-access-key" placeholder="Paste your Picovoice access key"/>
+          </div>
+          <div class="field">
+            <label>Wake Keyword File (.ppn)</label>
+            <input class="inp" id="porcupine-keyword-path" placeholder="C:\\desktop-mascot\\mic\\porcupine\\hey-mascot_windows.ppn"/>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" id="wake-porcupine-tuning" style="display:none;margin-bottom:12px;">
+          <div class="field">
+            <label>Porcupine Sensitivity</label>
+            <div class="slider-row" style="gap:4px;">
+              <div class="slider-top"><span class="slider-label">Wake trigger strength</span><span class="slider-val" id="porcupine-sensitivity-val">0.55</span></div>
+              <input type="range" id="porcupine-sensitivity" min="0.20" max="0.95" step="0.01" value="0.55"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Porcupine Runtime</label>
+            <div class="hint" style="padding-top:6px;">Porcupine needs an AccessKey and a custom .ppn keyword file for your wake phrase.</div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Enable follow-up window</span>
+                  <span class="tl-d">Keep a short voice session after a voice-driven turn.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-wake-followup"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Rearm after reply</span>
+                  <span class="tl-d">Start wake listening again after a completed response.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-wake-listen-reply"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Rearm right after send</span>
+                  <span class="tl-d">Restart wake listening as soon as your message is placed in chat.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-wake-rearm-send"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Voice HUD</span>
+                  <span class="tl-d">Show the floating listening and transcribing status pill.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-voice-hud"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Voice interruption</span>
+                  <span class="tl-d">Allow commands like stop talking.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-voice-interrupt"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body">
+              <div class="trow">
+                <div class="tl">
+                  <span class="tl-n">Command confirmation</span>
+                  <span class="tl-d">Ask before risky actions like clearing memory or chat.</span>
+                </div>
+                <label class="toggle"><input type="checkbox" id="tog-voice-confirm"/><div class="track"><div class="thumb"></div></div></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-grid cols2" style="margin-bottom:12px;">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+              <div class="tl">
+                <span class="tl-n">Mic calibration</span>
+                <span class="tl-d">Auto-tune the mic threshold from your room noise.</span>
+              </div>
+              <button class="btn btn-secondary btn-sm" id="voice-calibrate-btn">Calibrate</button>
+            </div>
+          </div>
+          <div class="field" style="margin:0;">
+            <label>whisper.cpp Runtime</label>
+            <div id="stt-openai-box">
+              <div class="hint" style="margin-bottom:10px;">
+                Uses <b>OpenAI Whisper</b> for cloud transcription. This needs internet and an API key.
+              </div>
+            </div>
+            <div id="stt-local-box" style="display:none;">
+              <div class="hint" style="margin-bottom:10px;">
+                Uses the bundled <b>whisper.cpp</b> runtime when available. You can still override it below.
+              </div>
+              <div class="card-grid cols2" style="margin-bottom:10px;">
+                <div class="field">
+                  <label>whisper.cpp Executable</label>
+                  <input class="inp" id="whispercpp-path" placeholder="C:\\whisper.cpp\\build\\bin\\Release\\whisper-cli.exe"/>
+                </div>
+                <div class="field">
+                  <label>Model File</label>
+                  <input class="inp" id="whispercpp-model" placeholder="C:\\whisper.cpp\\models\\ggml-base.bin"/>
+                </div>
+              </div>
+              <div class="hint">
+                Local mode is free after setup and runs offline.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-header" style="margin:8px 0 10px;">Diagnostics</div>
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius2);margin-bottom:10px;">
+          <span id="whisper-key-dot" class="status-dot grey"></span>
+          <span id="whisper-key-status" style="font-size:11px;color:var(--muted);">
+            Add your OpenAI key in AI Model -> OpenAI tab to enable
+          </span>
+        </div>
+
+        <div class="subtle-box" style="margin-bottom:10px;">
+          <div style="font-size:10px;color:var(--muted);font-family:Space Mono,monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Wake Monitor</div>
+          <div id="wake-monitor-text" style="font-size:13px;color:var(--text2);line-height:1.6;min-height:22px;">Listening for wake phrase...</div>
+        </div>
+
+        <div class="subtle-box" style="margin-bottom:10px;">
+          <div style="font-size:10px;color:var(--muted);font-family:Space Mono,monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Wake History</div>
+          <div id="wake-history-list" style="display:grid;gap:6px;">
+            <div style="font-size:12px;color:var(--muted);">No wake activity yet.</div>
+          </div>
+        </div>
+
+        <div class="mini-grid" style="margin-bottom:8px;">
+          <div class="metric"><div class="k">Speech Engine</div><div class="v" id="voice-metric-engine">Local whisper.cpp</div><div class="s">Current STT backend</div></div>
+          <div class="metric"><div class="k">Wake Word</div><div class="v" id="voice-metric-wake">Off</div><div class="s">Current wake status</div></div>
+          <div class="metric"><div class="k">Intent Routing</div><div class="v" id="voice-metric-routing">Hybrid</div><div class="s">Voice command interpretation mode</div></div>
+          <div class="metric"><div class="k">Runtime</div><div class="v" id="voice-metric-runtime">Idle</div><div class="s">Live mic state</div></div>
+        </div>`;
+    }
+  }
   if(micSlot&&micCard&&micCard.parentElement!==micSlot) micSlot.appendChild(micCard);
   if(micSlot&&micSaveRow&&micSaveRow.parentElement!==micSlot) micSlot.appendChild(micSaveRow);
 }
@@ -469,6 +847,8 @@ function getNoisePresetConstraints(){
 
 function getWhisperCommandLang(){
   if(cfg.sttBilingualBias==='hi-en') return 'auto';
+  if(cfg.sttBilingualBias==='en-first') return 'en';
+  if(cfg.sttBilingualBias==='hi-first') return 'hi';
   if(cfg.sttLanguage==='hi') return 'hi';
   if(cfg.sttLanguage==='en') return 'en';
   return 'auto';
@@ -476,6 +856,43 @@ function getWhisperCommandLang(){
 
 function normalizeVoiceText(text){
   return (text||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim();
+}
+
+function escapeRegex(value){
+  return String(value||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+}
+
+function formatWakeTimestamp(ts){
+  try{
+    return new Date(ts).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  }catch{
+    return '';
+  }
+}
+
+function renderWakeHistory(){
+  const host=document.getElementById('wake-history-list');
+  if(!host) return;
+  if(!wakeHistory.length){
+    host.innerHTML='<div style="font-size:12px;color:var(--muted);">No wake activity yet.</div>';
+    return;
+  }
+  host.innerHTML=wakeHistory.map(item=>{
+    const tone=item.matched ? 'var(--green)' : 'var(--yellow)';
+    const state=item.matched ? 'matched' : 'not matched';
+    const text=(item.text||'').replace(/[<>&]/g,ch=>({ '<':'&lt;','>':'&gt;','&':'&amp;' }[ch]));
+    return `<div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:8px 10px;background:var(--s2);border:1px solid var(--border);border-radius:var(--radius2);">
+      <div style="font:11px 'Space Mono',monospace;color:var(--muted);white-space:nowrap;">${formatWakeTimestamp(item.ts)}</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.4;">${text||'<span style="color:var(--muted);">No transcript</span>'}</div>
+      <div style="font:11px 'Space Mono',monospace;color:${tone};text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;">${state}</div>
+    </div>`;
+  }).join('');
+}
+
+function pushWakeHistory(text, matched){
+  wakeHistory.unshift({ ts:Date.now(), text:(text||'').trim(), matched:!!matched });
+  wakeHistory=wakeHistory.slice(0,WAKE_HISTORY_LIMIT);
+  renderWakeHistory();
 }
 
 function getWakePhrases(){
@@ -672,6 +1089,7 @@ function applyMicConfigToInputs(){
   setEl('whispercpp-path',cfg.whisperCppPath||'');
   setEl('whispercpp-model',cfg.whisperCppModel||'');
   setWakeMonitorPreview(wakeMonitorPreview||'Listening for wake phrase...');
+  renderWakeHistory();
 }
 
 function resetMicSettings(){
@@ -687,6 +1105,8 @@ function resetMicSettings(){
   cancelTranscription();
   stopWakeWordListener();
   Object.assign(cfg,MIC_RESET_DEFAULTS,preserved);
+  wakeHistory=[];
+  wakeMonitorPreview='Listening for wake phrase...';
   applyMicConfigToInputs();
   updateSTTUI();
   setupMic();
@@ -735,16 +1155,17 @@ function getWakeEngine(){
 }
 
 function extractWakePayload(text){
-  const normalized=normalizeVoiceText(text);
+  const raw=(text||'').trim();
+  if(!raw) return '';
   for(const phrase of getWakePhrases()){
-    const wake=normalizeVoiceText(phrase);
+    const wake=String(phrase||'').trim();
     if(!wake) continue;
-    const idx=normalized.indexOf(wake);
-    if(idx===-1) continue;
-    const after=normalized.slice(idx+wake.length).trim();
+    const match=raw.match(new RegExp(`^\\s*${escapeRegex(wake)}(?:[\\s,.:;!?-]+(.*))?$`,'i'));
+    if(!match) continue;
+    const after=(match[1]||'').trim();
     return after || '__wake__';
   }
-  return '';
+  return isWakeMatch(raw) ? '__wake__' : '';
 }
 
 function stripWakePhrase(text){
@@ -752,9 +1173,20 @@ function stripWakePhrase(text){
   if(!cfg.wakeWordEnabled) return raw;
   let cleaned=raw;
   getWakePhrases().forEach(phrase=>{
-    const escaped=phrase.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const escaped=escapeRegex(phrase);
     cleaned=cleaned.replace(new RegExp(`^\\s*${escaped}[\\s,.:;-]*`,'i'),'').trim();
   });
+  return cleaned;
+}
+
+function cleanTranscriptText(text,{stripWake=false}={}){
+  let cleaned=(text||'').replace(/\s+/g,' ').trim();
+  if(stripWake) cleaned=stripWakePhrase(cleaned);
+  cleaned=cleaned.replace(/^(?:hey|hi)\s+(?:mascot|maskot|mascut)[\s,.:;-]*/i,'').trim();
+  cleaned=cleaned.replace(/\b(blank audio|no speech detected)\b/ig,'').replace(/\s+/g,' ').trim();
+  if(cleaned && /^[a-z]/.test(cleaned) && cleaned.split(/\s+/).length > 3){
+    cleaned=cleaned.charAt(0).toUpperCase()+cleaned.slice(1);
+  }
   return cleaned;
 }
 
@@ -1019,7 +1451,7 @@ async function executeVoiceCommand(rawText){
 }
 
 async function handleVoiceTranscript(text,meta={}){
-  const trimmed=(text||'').trim();
+  const trimmed=cleanTranscriptText(text,{stripWake:!meta.skipWake});
   if(!trimmed) return true;
   const normalized=normalizeVoiceText(trimmed);
   if(lastVoiceIntent && /^(confirm|yes|do it|go ahead|haan|han)$/.test(normalized)){
@@ -1045,6 +1477,7 @@ async function handleVoiceTranscript(text,meta={}){
       setTimeout(()=>showInterim(''),1500);
       return true;
     }
+    payload=cleanTranscriptText(payload);
   }
   const commandHandled=await executeVoiceCommand(payload);
   if(commandHandled){
@@ -1149,11 +1582,13 @@ function trimWakeChunks(maxSamples=16000*5){
 }
 
 async function processWakeTranscript(text){
-  const heard=(text||'').trim();
+  const heard=cleanTranscriptText(text);
   wakeDebug('wake-transcript', heard);
   if(!heard) return;
   setWakeMonitorPreview(`Heard: ${heard}`);
-  if(!isWakeMatch(heard)) return;
+  const matched=isWakeMatch(heard);
+  pushWakeHistory(heard,matched);
+  if(!matched) return;
   triggerWakeListening();
 }
 
@@ -1258,6 +1693,8 @@ async function setupWakeWordListener(){
         if(!porcupineLoopActive || !cfg.wakeWordEnabled || isListening || isThinking || ttsBusy) continue;
         const keywordIndex=porcupineHandle.process(frame);
         if(keywordIndex>=0){
+          pushWakeHistory(cfg.wakeWordPhrase||'hey mascot',true);
+          setWakeMonitorPreview(`Heard: ${cfg.wakeWordPhrase||'hey mascot'}`);
           triggerWakeListening();
         }
       }
@@ -1880,7 +2317,7 @@ async function calibrateAmbientNoise(){
 }
 
 async function applyTranscribedText(text){
-  const clean=(text||'').trim();
+  const clean=cleanTranscriptText(text,{stripWake:voiceListeningMode==='wake'});
   if(!clean){
     setTranscribingUI(false);
     showInterim('Nothing detected - try again');
