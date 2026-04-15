@@ -36,6 +36,7 @@ const store = new Store({
     openaiTTSKey:'',openaiTTSModel:'tts-1',openaiTTSVoice:'nova',
     savedProviders:[],
     chatFontSize:14,theme:'dark',
+    mascotModelPath:'model/model 1/ai_assistant_model.model3.json',
     chatHistory:[],
   }
 });
@@ -111,7 +112,12 @@ ipcMain.on('toggle-behind-taskbar',(_, val)=>{store.set('behindTaskbar',val);if(
 ipcMain.on('preview-position',(_, {x,y})=>mascot?.setPosition(x,y));
 ipcMain.on('preview-size',(_, {width,height})=>{if(!mascot)return;mascot.setSize(width,height);mascot.webContents.send('set-size',{width,height});});
 ipcMain.on('preview-scale',(_, {scale})=>mascot?.webContents.send('set-scale',{scale}));
-ipcMain.on('save-config',(_, cfg)=>{Object.entries(cfg).forEach(([k,v])=>{if(k!=='memory')store.set(k,v);});controlPanel?.webContents.send('save-confirmed');});
+ipcMain.on('preview-mascot-model',(_, {modelPath})=>{mascot?.webContents.send('set-model',{modelPath});});
+ipcMain.on('save-config',(_, cfg)=>{
+  Object.entries(cfg).forEach(([k,v])=>{if(k!=='memory')store.set(k,v);});
+  if(cfg.mascotModelPath) mascot?.webContents.send('set-model',{modelPath:cfg.mascotModelPath});
+  controlPanel?.webContents.send('save-confirmed');
+});
 ipcMain.on('save-chat-history',(_, h)=>store.set('chatHistory',h.slice(-100)));
 ipcMain.on('clear-chat-history',()=>{store.set('chatHistory',[]);controlPanel?.webContents.send('chat-history-cleared');});
 ipcMain.on('memory-set-name',       (_, n)=>memory.setUserName(n));

@@ -33,22 +33,45 @@ function finishSplash() {
 setTimeout(finishSplash, 4000);
 
 // ─── Live2D (non-blocking background load) ───────────────
-let chatModel=null, chatPixiApp=null;
-setTimeout(async function loadLive2D() {
+let chatModel=null, chatPixiApp=null, chatBaseScale=1;
+async function loadChatModel(modelPath){
   try {
-    new Function(fs.readFileSync(path.join(__dirname,'live2dcubismcore.min.js'),'utf8'))();
-    const PIXI=require('pixi.js'); window.PIXI=PIXI;
-    const {Live2DModel}=require('pixi-live2d-display/cubism4');
-    const W=54,H=62,canvas=document.getElementById('char-canvas');
-    if(!canvas) return;
-    canvas.width=W;canvas.height=H;
-    chatPixiApp=new PIXI.Application({view:canvas,width:W,height:H,backgroundAlpha:0,antialias:true});
-    chatModel=await Live2DModel.from('./model/ai_assistant_model.model3.json');
+    if(!chatPixiApp){
+      new Function(fs.readFileSync(path.join(__dirname,'live2dcubismcore.min.js'),'utf8'))();
+      const PIXI=require('pixi.js'); window.PIXI=PIXI;
+      const {Live2DModel}=require('pixi-live2d-display/cubism4');
+      const W=54,H=62,canvas=document.getElementById('char-canvas');
+      if(!canvas) return;
+      canvas.width=W;canvas.height=H;
+      chatPixiApp=new PIXI.Application({view:canvas,width:W,height:H,backgroundAlpha:0,antialias:true});
+      window.Live2DModel = Live2DModel;
+    }
+    const Live2D = window.Live2DModel || require('pixi-live2d-display/cubism4').Live2DModel;
+    const resolved=`./${String(modelPath||cfg.mascotModelPath||'model/model 1/ai_assistant_model.model3.json').replace(/\\/g,'/')}`;
+    const nextModel=await Live2D.from(resolved);
+    if(chatModel){
+      chatPixiApp.stage.removeChild(chatModel);
+      chatModel.destroy();
+    }
+    chatModel=nextModel;
     chatPixiApp.stage.addChild(chatModel);
-    chatModel.anchor.set(0.5,1.0);chatModel.scale.set(0.042);
-    chatModel.x=W/2;chatModel.y=H;
+    const width=Math.max(
+      chatModel.internalModel?.width || chatModel.internalModel?.originalWidth || chatModel.width || 0,
+      1
+    );
+    const height=Math.max(
+      chatModel.internalModel?.height || chatModel.internalModel?.originalHeight || chatModel.height || 0,
+      1
+    );
+    chatBaseScale=Math.min((54*0.78)/width,(62*0.9)/height);
+    const factor=Math.max((cfg.scale||0.25)/0.25,0.2);
+    chatModel.anchor.set(0.5,1.0);
+    chatModel.scale.set(chatBaseScale*factor);
+    chatModel.x=27;chatModel.y=62;
   } catch(e){console.error('[Live2D]',e);}
-}, 100);
+}
+
+setTimeout(()=>loadChatModel(), 100);
 
 // ─── State ────────────────────────────────────────────────
 let cfg={
@@ -76,6 +99,7 @@ let cfg={
   elevenKey:'',elevenVoiceId:'EXAVITQu4vr4xnSDxMaL',elevenModel:'eleven_turbo_v2_5',
   piperPath:'',piperVoice:'',
   whisperCppPath:'',whisperCppModel:'',
+  mascotModelPath:'model/model 1/ai_assistant_model.model3.json',
   chatFontSize:14,theme:'dark',
   mascotVisible:true,clickThrough:true,borderVisible:false,alwaysOnTop:true,behindTaskbar:false,
   mascotX:1261,mascotY:264,mascotWidth:200,mascotHeight:220,scale:0.25,
@@ -86,6 +110,7 @@ let ttsQueue=[],ttsBusy=false,synthVoices=[],preferredVoice=null;
 let selectedElevenVoiceId='',currentFontSize=14;
 let currentPage='home',currentProviderTab='ollama',currentVoiceEngine='system';
 let availableMics=[],pendingTranscript='';
+let availableMascotModels=[];
 let lastVoiceCommand='';
 let wakeMonitorStream=null,wakeMonitorContext=null,wakeMonitorSource=null,wakeMonitorProcessor=null,wakeMonitorSilencer=null;
 let wakeMonitorChunks=[],wakeMonitorSpeechMs=0,wakeMonitorSilenceMs=0,wakeMonitorHeardSpeech=false,wakeMonitorTranscribing=false;
@@ -136,7 +161,9 @@ const MIC_RESET_DEFAULTS={
 ipcRenderer.on('init-config',(_, s)=>{
   Object.assign(cfg,s);
   if(s.memory) Object.assign(mem,s.memory);
+  renderMascotModelOptions();
   applyConfig();
+  loadChatModel(cfg.mascotModelPath);
   finishSplash();
   checkOllamaStatus();
   loadSystemVoices();
@@ -206,6 +233,8 @@ function applyConfig(){
   setEl('piper-path',cfg.piperPath);setEl('piper-voice',cfg.piperVoice);
   setEl('whispercpp-path',cfg.whisperCppPath||'');
   setEl('whispercpp-model',cfg.whisperCppModel||'');
+  setEl('mascot-model-select',cfg.mascotModelPath||'');
+  tv('mascot-model-note',cfg.mascotModelPath||'');
   setEl('openai-tts-key',cfg.openaiTTSKey||cfg.openaiKey||'');
   setEl('openai-tts-model',cfg.openaiTTSModel||'tts-1');
   openAITTSVoice=cfg.openaiTTSVoice||'nova';
@@ -665,6 +694,67 @@ function flash(id,dur=2000){const e=document.getElementById(id);if(!e)return;e.c
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');}
 function togglePass(id){const e=document.getElementById(id);if(e)e.type=e.type==='password'?'text':'password';}
 function shell(url){electronShell?.openExternal(url);}
+function modelLabelFromPath(modelPath){
+  const rel=String(modelPath||'').replace(/\\/g,'/');
+  const folder=rel.split('/').slice(0,-1).pop()||'model';
+  return folder.replace(/[-_]+/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+}
+function discoverMascotModels(){
+  const root=path.join(__dirname,'model');
+  if(!fs.existsSync(root)) return [];
+  const found=[];
+  const walk=dir=>{
+    for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
+      const full=path.join(dir,entry.name);
+      if(entry.isDirectory()) walk(full);
+      else if(entry.isFile() && entry.name.endsWith('.model3.json')){
+        const rel=path.relative(__dirname,full).replace(/\\/g,'/');
+        found.push({ value:rel, label:modelLabelFromPath(rel), file:entry.name });
+      }
+    }
+  };
+  walk(root);
+  return found.sort((a,b)=>a.label.localeCompare(b.label));
+}
+function renderMascotModelOptions(){
+  availableMascotModels=discoverMascotModels();
+  const select=document.getElementById('mascot-model-select');
+  const note=document.getElementById('mascot-model-note');
+  if(!select) return;
+  select.innerHTML='';
+  if(!availableMascotModels.length){
+    const opt=document.createElement('option');
+    opt.value='';
+    opt.textContent='No Live2D models found';
+    select.appendChild(opt);
+  }else{
+    availableMascotModels.forEach(item=>{
+      const opt=document.createElement('option');
+      opt.value=item.value;
+      opt.textContent=`${item.label} (${item.file})`;
+      select.appendChild(opt);
+    });
+  }
+  const current=availableMascotModels.some(item=>item.value===cfg.mascotModelPath)
+    ? cfg.mascotModelPath
+    : (availableMascotModels[0]?.value || '');
+  cfg.mascotModelPath=current;
+  select.value=current;
+  if(note){
+    note.textContent=current
+      ? `Current file: ${current}`
+      : 'Put .model3.json exports anywhere inside the model folder.';
+  }
+}
+
+function previewMascotModel(modelPath){
+  const selected = String(modelPath||'').trim();
+  if(!selected) return;
+  cfg.mascotModelPath=selected;
+  tv('mascot-model-note',`Current file: ${selected}`);
+  loadChatModel(selected);
+  ipcRenderer.send('preview-mascot-model',{ modelPath:selected });
+}
 
 // ─── Home cards ───────────────────────────────────────────
 function updateHomeCards(){
@@ -2797,11 +2887,23 @@ document.getElementById('h-m').onclick=()=>{cfg.mascotHeight=Math.max(50,cfg.mas
 document.getElementById('h-p').onclick=()=>{cfg.mascotHeight+=10;setEl('win-h',cfg.mascotHeight);sendSize();};
 document.getElementById('win-w').oninput=e=>{cfg.mascotWidth=Math.max(50,parseInt(e.target.value)||50);sendSize();};
 document.getElementById('win-h').oninput=e=>{cfg.mascotHeight=Math.max(50,parseInt(e.target.value)||50);sendSize();};
-document.getElementById('scale-slider').oninput=e=>{cfg.scale=parseFloat(e.target.value);tv('scale-val',cfg.scale.toFixed(2));ipcRenderer.send('preview-scale',{scale:cfg.scale});};
+document.getElementById('scale-slider').oninput=e=>{
+  cfg.scale=parseFloat(e.target.value);
+  tv('scale-val',cfg.scale.toFixed(2));
+  ipcRenderer.send('preview-scale',{scale:cfg.scale});
+  if(chatModel){
+    const factor=Math.max((cfg.scale||0.25)/0.25,0.2);
+    chatModel.scale.set(chatBaseScale*factor);
+  }
+};
+document.getElementById('mascot-model-select')?.addEventListener('change',e=>{
+  previewMascotModel(e.target.value);
+});
 document.getElementById('mascot-save-btn').onclick=()=>{
   cfg.mascotX=parseInt(val('pos-x'))||cfg.mascotX;cfg.mascotY=parseInt(val('pos-y'))||cfg.mascotY;
   cfg.mascotWidth=parseInt(val('win-w'))||cfg.mascotWidth;cfg.mascotHeight=parseInt(val('win-h'))||cfg.mascotHeight;
   cfg.scale=parseFloat(val('scale-slider'));
+  cfg.mascotModelPath=val('mascot-model-select')||cfg.mascotModelPath;
   ipcRenderer.send('save-config',{...cfg});flash('mascot-save-ok');
 };
 
