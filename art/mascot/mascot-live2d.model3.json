@@ -1,0 +1,26 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "mascot-live2d.moc3",
+		"Textures": [
+			"mascot-live2d.2048/texture_00.png"
+		],
+		"Physics": "mascot-live2d.physics3.json",
+		"DisplayInfo": "mascot-live2d.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeROpen",
+				"ParamEyeLOpen"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		}
+	]
+}
