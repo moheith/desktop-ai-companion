@@ -175,6 +175,10 @@ ipcRenderer.on('init-config',(_, s)=>{
 ipcRenderer.on('state-update',(_,u)=>{
   if(u.alwaysOnTop!=null){cfg.alwaysOnTop=u.alwaysOnTop;document.getElementById('tog-ontop').checked=cfg.alwaysOnTop;}
   if(u.behindTaskbar!=null){cfg.behindTaskbar=u.behindTaskbar;document.getElementById('tog-taskbar').checked=cfg.behindTaskbar;}
+  if(u.mascotX!=null){cfg.mascotX=u.mascotX;setEl('pos-x',cfg.mascotX);}
+  if(u.mascotY!=null){cfg.mascotY=u.mascotY;setEl('pos-y',cfg.mascotY);}
+  if(u.mascotWidth!=null){cfg.mascotWidth=u.mascotWidth;setEl('win-w',cfg.mascotWidth);}
+  if(u.mascotHeight!=null){cfg.mascotHeight=u.mascotHeight;setEl('win-h',cfg.mascotHeight);}
 });
 ipcRenderer.on('save-confirmed',()=>flash('mascot-save-ok'));
 ipcRenderer.on('chat-history-cleared',()=>{chatHistory=[];clearChatUI();});
@@ -2869,7 +2873,7 @@ document.getElementById('looks-save-btn').onclick=()=>{
 // ─── Mascot toggles ───────────────────────────────────────
 document.getElementById('tog-mascot').onchange=e=>{cfg.mascotVisible=e.target.checked;ipcRenderer.send('toggle-mascot',cfg.mascotVisible);};
 document.getElementById('tog-click').onchange=e=>{cfg.clickThrough=e.target.checked;ipcRenderer.send('toggle-click-through',cfg.clickThrough);};
-document.getElementById('tog-border').onchange=e=>{cfg.borderVisible=e.target.checked;ipcRenderer.send('toggle-border',cfg.borderVisible);};
+document.getElementById('tog-border')?.addEventListener('change',e=>{cfg.borderVisible=e.target.checked;ipcRenderer.send('toggle-border',cfg.borderVisible);});
 document.getElementById('tog-ontop').onchange=e=>{cfg.alwaysOnTop=e.target.checked;if(cfg.alwaysOnTop){cfg.behindTaskbar=false;ck('tog-taskbar',false);}ipcRenderer.send('toggle-always-on-top',cfg.alwaysOnTop);};
 document.getElementById('tog-taskbar').onchange=e=>{cfg.behindTaskbar=e.target.checked;if(cfg.behindTaskbar){cfg.alwaysOnTop=false;ck('tog-ontop',false);}ipcRenderer.send('toggle-behind-taskbar',cfg.behindTaskbar);};
 

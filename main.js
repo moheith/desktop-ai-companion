@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen } = require('electron');
 const Store  = require('electron-store');
 const memory = require('./memory');
 
@@ -42,12 +42,54 @@ const store = new Store({
 });
 
 let mascot=null, controlPanel=null, tray=null;
+let mascotHovering=false;
+let mascotDragging=false;
+let mascotDragOffset={ x: 0, y: 0 };
+let mascotDragTick=null;
 
 function applyWindowLevel() {
   if (!mascot||mascot.isDestroyed()) return;
   if (store.get('behindTaskbar'))    mascot.setAlwaysOnTop(false);
   else if (store.get('alwaysOnTop')) mascot.setAlwaysOnTop(true,'screen-saver');
   else                               mascot.setAlwaysOnTop(false);
+}
+
+function syncMascotMouseMode() {
+  if (!mascot || mascot.isDestroyed()) return;
+  const shouldIgnore = store.get('clickThrough') && !mascotHovering && !mascotDragging;
+  mascot.setIgnoreMouseEvents(shouldIgnore, { forward: true });
+}
+
+function syncMascotStateToPanel() {
+  if (!mascot || mascot.isDestroyed()) return;
+  const [x, y] = mascot.getPosition();
+  const [width, height] = mascot.getSize();
+  controlPanel?.webContents.send('state-update', {
+    mascotX: x,
+    mascotY: y,
+    mascotWidth: width,
+    mascotHeight: height,
+  });
+}
+
+function startMascotDragLoop() {
+  if (mascotDragTick) return;
+  mascotDragTick = setInterval(() => {
+    if (!mascotDragging || !mascot || mascot.isDestroyed()) return;
+    const point = screen.getCursorScreenPoint();
+    const nextX = Math.round(point.x - mascotDragOffset.x);
+    const nextY = Math.round(point.y - mascotDragOffset.y);
+    mascot.setPosition(nextX, nextY);
+    store.set('mascotX', nextX);
+    store.set('mascotY', nextY);
+    syncMascotStateToPanel();
+  }, 16);
+}
+
+function stopMascotDragLoop() {
+  if (!mascotDragTick) return;
+  clearInterval(mascotDragTick);
+  mascotDragTick = null;
 }
 
 function createMascot() {
@@ -59,13 +101,16 @@ function createMascot() {
   });
   mascot.loadFile('index.html');
   applyWindowLevel();
-  mascot.setIgnoreMouseEvents(store.get('clickThrough'),{forward:true});
+  syncMascotMouseMode();
   if (!store.get('mascotVisible')) mascot.hide();
   setInterval(()=>{
     if (mascot&&!mascot.isDestroyed()&&mascot.isVisible()&&store.get('alwaysOnTop')&&!store.get('behindTaskbar'))
       mascot.moveTop();
   },1000);
-  mascot.on('closed',()=>{mascot=null;});
+  mascot.on('closed',()=>{
+    stopMascotDragLoop();
+    mascot=null;
+  });
 }
 
 function createControlPanel() {
@@ -105,17 +150,46 @@ ipcMain.on('close-panel',   ()=>controlPanel?.close());
 ipcMain.on('minimize-panel',()=>controlPanel?.minimize());
 ipcMain.on('maximize-panel',()=>{if(!controlPanel)return;controlPanel.isMaximized()?controlPanel.unmaximize():controlPanel.maximize();});
 ipcMain.on('toggle-mascot',(_, val)=>{store.set('mascotVisible',val);if(!mascot||mascot.isDestroyed())return;if(val){mascot.show();applyWindowLevel();}else mascot.hide();});
-ipcMain.on('toggle-click-through',(_, val)=>{store.set('clickThrough',val);mascot?.setIgnoreMouseEvents(val,{forward:true});});
+ipcMain.on('toggle-click-through',(_, val)=>{store.set('clickThrough',val);syncMascotMouseMode();});
 ipcMain.on('toggle-border',(_, val)=>{store.set('borderVisible',val);mascot?.webContents.send('set-border',val);});
 ipcMain.on('toggle-always-on-top',(_, val)=>{store.set('alwaysOnTop',val);if(val)store.set('behindTaskbar',false);applyWindowLevel();controlPanel?.webContents.send('state-update',{behindTaskbar:store.get('behindTaskbar')});});
 ipcMain.on('toggle-behind-taskbar',(_, val)=>{store.set('behindTaskbar',val);if(val)store.set('alwaysOnTop',false);applyWindowLevel();controlPanel?.webContents.send('state-update',{alwaysOnTop:store.get('alwaysOnTop')});});
-ipcMain.on('preview-position',(_, {x,y})=>mascot?.setPosition(x,y));
-ipcMain.on('preview-size',(_, {width,height})=>{if(!mascot)return;mascot.setSize(width,height);mascot.webContents.send('set-size',{width,height});});
+ipcMain.on('preview-position',(_, {x,y})=>{
+  mascot?.setPosition(x,y);
+  syncMascotStateToPanel();
+});
+ipcMain.on('preview-size',(_, {width,height})=>{
+  if(!mascot)return;
+  mascot.setSize(width,height);
+  mascot.webContents.send('set-size',{width,height});
+  syncMascotStateToPanel();
+});
 ipcMain.on('preview-scale',(_, {scale})=>mascot?.webContents.send('set-scale',{scale}));
 ipcMain.on('preview-mascot-model',(_, {modelPath})=>{mascot?.webContents.send('set-model',{modelPath});});
+ipcMain.on('mascot-hover-state',(_, { hovered })=>{
+  mascotHovering = !!hovered;
+  syncMascotMouseMode();
+});
+ipcMain.on('mascot-drag-start',(_, payload={})=>{
+  mascotDragging = true;
+  mascotHovering = true;
+  mascotDragOffset = {
+    x: Number(payload.offsetX) || 0,
+    y: Number(payload.offsetY) || 0,
+  };
+  syncMascotMouseMode();
+  startMascotDragLoop();
+});
+ipcMain.on('mascot-drag-end',()=>{
+  mascotDragging = false;
+  syncMascotMouseMode();
+  stopMascotDragLoop();
+  syncMascotStateToPanel();
+});
 ipcMain.on('save-config',(_, cfg)=>{
   Object.entries(cfg).forEach(([k,v])=>{if(k!=='memory')store.set(k,v);});
   if(cfg.mascotModelPath) mascot?.webContents.send('set-model',{modelPath:cfg.mascotModelPath});
+  syncMascotMouseMode();
   controlPanel?.webContents.send('save-confirmed');
 });
 ipcMain.on('save-chat-history',(_, h)=>store.set('chatHistory',h.slice(-100)));
@@ -133,3 +207,15 @@ ipcMain.handle('memory-get',      ()=>memory.getMemory());
 ipcMain.handle('memory-get-block',()=>memory.buildMemoryBlock());
 ipcMain.handle('memory-get-feed', ()=>memory.getMemoryFeed());
 ipcMain.handle('memory-get-mood', ()=>({mood:memory.getMood(),def:memory.getMoodDef()}));
+ipcMain.handle('get-mascot-context',()=>{
+  if(!mascot || mascot.isDestroyed()){
+    return { visible:false };
+  }
+  return {
+    visible: mascot.isVisible(),
+    bounds: mascot.getBounds(),
+    cursor: screen.getCursorScreenPoint(),
+    clickThrough: store.get('clickThrough'),
+    dragging: mascotDragging,
+  };
+});
