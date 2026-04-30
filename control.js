@@ -178,6 +178,7 @@ ipcRenderer.on('state-update',(_,u)=>{
   if(u.behindTaskbar!=null){cfg.behindTaskbar=u.behindTaskbar;document.getElementById('tog-taskbar').checked=cfg.behindTaskbar;}
   if(u.mascotX!=null){cfg.mascotX=u.mascotX;setEl('pos-x',cfg.mascotX);}
   if(u.mascotY!=null){cfg.mascotY=u.mascotY;setEl('pos-y',cfg.mascotY);}
+  if(u.mascotScale!=null){cfg.scale=u.mascotScale;setEl('scale-slider',cfg.scale);tv('scale-val',cfg.scale.toFixed(2));}
 });
 ipcRenderer.on('save-confirmed',()=>flash('mascot-save-ok'));
 ipcRenderer.on('chat-history-cleared',()=>{chatHistory=[];clearChatUI();});
@@ -2902,6 +2903,12 @@ document.getElementById('scale-slider').oninput=e=>{
 document.getElementById('mascot-model-select')?.addEventListener('change',e=>{
   previewMascotModel(e.target.value);
 });
+document.getElementById('mascot-reset-btn').onclick=()=>{
+  cfg.scale=0.25;
+  setEl('scale-slider',cfg.scale);
+  tv('scale-val',cfg.scale.toFixed(2));
+  ipcRenderer.send('preview-mascot-reset');
+};
 document.getElementById('mascot-save-btn').onclick=()=>{
   previewMascotPosition(parseInt(val('pos-x'),10)||cfg.mascotX,parseInt(val('pos-y'),10)||cfg.mascotY);
   cfg.scale=parseFloat(val('scale-slider'));

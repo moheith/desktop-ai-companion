@@ -4,7 +4,7 @@ const memory = require('./memory');
 
 const store = new Store({
   defaults: {
-    mascotX:1261,mascotY:264,mascotWidth:200,mascotHeight:220,mascotPlacementMode:'window',
+    mascotX:1261,mascotY:264,mascotWidth:200,mascotHeight:220,
     scale:0.25,mascotVisible:true,clickThrough:true,borderVisible:false,mascotDragShortcutEnabled:true,
     alwaysOnTop:true,behindTaskbar:false,
     aiProvider:'ollama',
@@ -44,19 +44,9 @@ const store = new Store({
 let mascot=null, controlPanel=null, tray=null;
 let mascotInteractionArmed=false;
 let mascotDragging=false;
-let mascotDragOffset={ x: 0, y: 0 };
+let mascotDragStartCursor={ x: 0, y: 0 };
+let mascotDragStartWindow={ x: 0, y: 0 };
 let mascotDragTick=null;
-
-function ensureMascotPlacementMode() {
-  if (store.get('mascotPlacementMode') === 'window') return;
-  const width = Number(store.get('mascotWidth')) || 200;
-  const height = Number(store.get('mascotHeight')) || 220;
-  const anchorX = Number(store.get('mascotX')) || 0;
-  const anchorY = Number(store.get('mascotY')) || 0;
-  store.set('mascotX', Math.round(anchorX - (width / 2)));
-  store.set('mascotY', Math.round(anchorY - height));
-  store.set('mascotPlacementMode', 'window');
-}
 
 function setMascotPosition(x, y, { persist=false } = {}) {
   if (!mascot || mascot.isDestroyed()) return;
@@ -99,7 +89,9 @@ function startMascotDragLoop() {
   mascotDragTick = setInterval(() => {
     if (!mascotDragging || !mascot || mascot.isDestroyed()) return;
     const point = screen.getCursorScreenPoint();
-    setMascotPosition(point.x - mascotDragOffset.x, point.y - mascotDragOffset.y, { persist:true });
+    const nextX = mascotDragStartWindow.x + (point.x - mascotDragStartCursor.x);
+    const nextY = mascotDragStartWindow.y + (point.y - mascotDragStartCursor.y);
+    setMascotPosition(nextX, nextY, { persist:true });
   }, 16);
 }
 
@@ -109,8 +101,18 @@ function stopMascotDragLoop() {
   mascotDragTick = null;
 }
 
+function getDefaultMascotPosition() {
+  const display = screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const width = Number(store.get('mascotWidth')) || 200;
+  const height = Number(store.get('mascotHeight')) || 220;
+  return {
+    x: Math.round(area.x + area.width - width - 48),
+    y: Math.round(area.y + area.height - height - 48),
+  };
+}
+
 function createMascot() {
-  ensureMascotPlacementMode();
   const width = store.get('mascotWidth');
   const height = store.get('mascotHeight');
   mascot=new BrowserWindow({
@@ -185,6 +187,12 @@ ipcMain.on('toggle-behind-taskbar',(_, val)=>{store.set('behindTaskbar',val);if(
 ipcMain.on('preview-position',(_, {x,y})=>{
   setMascotPosition(x,y);
 });
+ipcMain.on('preview-mascot-reset',()=>{
+  const pos = getDefaultMascotPosition();
+  setMascotPosition(pos.x, pos.y);
+  mascot?.webContents.send('set-scale',{scale:0.25});
+  controlPanel?.webContents.send('state-update',{mascotScale:0.25});
+});
 ipcMain.on('preview-scale',(_, {scale})=>mascot?.webContents.send('set-scale',{scale}));
 ipcMain.on('preview-mascot-model',(_, {modelPath})=>{mascot?.webContents.send('set-model',{modelPath});});
 ipcMain.on('mascot-interaction-arm',(_, { armed })=>{
@@ -196,7 +204,8 @@ ipcMain.on('mascot-drag-start',(_, payload={})=>{
   mascotInteractionArmed = true;
   const point = screen.getCursorScreenPoint();
   const [x, y] = mascot.getPosition();
-  mascotDragOffset = { x: point.x - x, y: point.y - y };
+  mascotDragStartCursor = { x: point.x, y: point.y };
+  mascotDragStartWindow = { x, y };
   syncMascotMouseMode();
   startMascotDragLoop();
 });

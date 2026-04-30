@@ -133,6 +133,10 @@ function pointWithinModel(localX, localY) {
   if (localX < 0 || localY < 0 || localX > W || localY > H) return false;
 
   try {
+    const hitAreas = model.hitTest(localX, localY);
+    if (Array.isArray(hitAreas) && hitAreas.length > 0) {
+      return true;
+    }
     const bounds = model.getBounds();
     return bounds.contains(localX, localY);
   } catch {
