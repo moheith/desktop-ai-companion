@@ -1316,13 +1316,15 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
       <!-- MASCOT -->
       <div class="page" id="page-mascot">
         <div class="page-inner">
-          <div class="page-header"><h1>🪆 Mascot Settings</h1></div>
+          <div class="page-header"><h1>Mascot Settings</h1></div>
           <div class="card">
             <div class="card-header">Visibility</div>
             <div class="card-body">
               <div class="trow"><div class="tl"><span class="tl-n">Show Mascot</span></div><label class="toggle"><input type="checkbox" id="tog-mascot" checked/><div class="track"><div class="thumb"></div></div></label></div>
               <div class="divider"></div>
-              <div class="trow"><div class="tl"><span class="tl-n">Click Through</span><span class="tl-d">Lets the desktop stay clickable until you hover the mascot.</span></div><label class="toggle"><input type="checkbox" id="tog-click" checked/><div class="track"><div class="thumb"></div></div></label></div>
+              <div class="trow"><div class="tl"><span class="tl-n">Click Through</span><span class="tl-d">Desktop stays clickable while the mascot watches the cursor.</span></div><label class="toggle"><input type="checkbox" id="tog-click" checked/><div class="track"><div class="thumb"></div></div></label></div>
+              <div class="divider"></div>
+              <div class="trow"><div class="tl"><span class="tl-n">Alt Hold Drag</span><span class="tl-d">Hold Alt and left-click the mascot for 3 seconds to drag it.</span></div><label class="toggle"><input type="checkbox" id="tog-drag-shortcut" checked/><div class="track"><div class="thumb"></div></div></label></div>
               <div class="divider"></div>
               <div class="trow"><div class="tl"><span class="tl-n">Always On Top</span></div><label class="toggle"><input type="checkbox" id="tog-ontop" checked/><div class="track"><div class="thumb"></div></div></label></div>
               <div class="divider"></div>
@@ -1332,19 +1334,17 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
           <div class="card">
             <div class="card-header">Position</div>
             <div class="card-body">
+              <div class="hint" style="margin-bottom:12px;">These coordinates track the mascot window position on the screen with no movement limit.</div>
               <div class="card-grid cols2">
-                <div class="field"><label>X</label><div class="nudge-row"><button class="nudge" id="x-m">−</button><input class="num-i" type="number" id="pos-x" value="1261"/><button class="nudge" id="x-p">+</button></div></div>
-                <div class="field"><label>Y</label><div class="nudge-row"><button class="nudge" id="y-m">−</button><input class="num-i" type="number" id="pos-y" value="264"/><button class="nudge" id="y-p">+</button></div></div>
+                <div class="field"><label>X</label><div class="nudge-row"><button class="nudge" id="x-m">-</button><input class="num-i" type="number" id="pos-x" value="1261"/><button class="nudge" id="x-p">+</button></div></div>
+                <div class="field"><label>Y</label><div class="nudge-row"><button class="nudge" id="y-m">-</button><input class="num-i" type="number" id="pos-y" value="264"/><button class="nudge" id="y-p">+</button></div></div>
               </div>
             </div>
           </div>
           <div class="card">
-            <div class="card-header">Size & Scale</div>
+            <div class="card-header">Scale</div>
             <div class="card-body">
-              <div class="card-grid cols2" style="margin-bottom:12px;">
-                <div class="field"><label>Width</label><div class="nudge-row"><button class="nudge" id="w-m">−</button><input class="num-i" type="number" id="win-w" value="200"/><button class="nudge" id="w-p">+</button></div></div>
-                <div class="field"><label>Height</label><div class="nudge-row"><button class="nudge" id="h-m">−</button><input class="num-i" type="number" id="win-h" value="220"/><button class="nudge" id="h-p">+</button></div></div>
-              </div>
+              <div class="hint" style="margin-bottom:12px;">Window size is handled internally now. Scale changes how large the mascot appears.</div>
               <div class="slider-row">
                 <div class="slider-top"><span class="slider-label">Model Scale</span><span class="slider-val" id="scale-val">0.25</span></div>
                 <input type="range" id="scale-slider" min="0.05" max="0.80" step="0.01" value="0.25"/>
@@ -1363,14 +1363,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
               <div class="hint" id="mascot-model-note">Put exported Live2D model folders inside the model folder to make them show up here.</div>
             </div>
           </div>
-          <div class="btn-row"><button class="btn btn-primary" id="mascot-save-btn">💾 Save Mascot Settings</button><span class="flash-ok" id="mascot-save-ok">✓ Saved!</span></div>
+          <div class="btn-row"><button class="btn btn-primary" id="mascot-save-btn">Save Mascot Settings</button><span class="flash-ok" id="mascot-save-ok">Saved</span></div>
         </div>
       </div>
 
     </div>
   </div>
-</div>
-<div class="voice-hud" id="voice-hud" data-state="idle">
+</div><div class="voice-hud" id="voice-hud" data-state="idle">
   <span class="voice-hud-dot"></span>
   <span class="voice-hud-icon" id="voice-hud-icon">🎙</span>
   <span class="voice-hud-body">
@@ -1382,3 +1381,4 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 <script src="control.js"></script>
 </body>
 </html>
+

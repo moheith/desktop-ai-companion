@@ -16,7 +16,9 @@ The mascot runs in a transparent Electron window and can interact with the user 
 * Local microphone STT with whisper.cpp
 * OpenAI Whisper STT fallback
 * Persistent memory system
-* Adjustable mascot size and position
+* Adjustable mascot position and scale
+* Model selector for multiple Live2D mascots
+* Alt-hold drag shortcut for repositioning the mascot
 * Always-on-top mode
 * Behind-taskbar mode
 
@@ -179,6 +181,25 @@ The installer will appear in:
 ```text
 dist/
 ```
+
+---
+
+## Mascot Controls
+
+The desktop mascot stays click-through by default so it does not block normal desktop use.
+
+Current mascot interactions:
+
+* Hover the mascot to reduce its opacity so you can see behind it
+* Hold `Alt`, then left-click and hold the mascot for 3 seconds to drag it
+* Release the mouse to drop the mascot in place
+* Use the `Mascot` page in the control panel to fine-tune `X`, `Y`, scale, visibility, and model selection
+
+Notes:
+
+* `X` and `Y` in the `Mascot` page represent the mascot window position on the screen
+* The app now uses `Scale` as the main size control for the mascot appearance
+* Window width and height are handled internally and are no longer exposed as primary user controls
 
 ---
 

@@ -100,6 +100,7 @@ let cfg={
   piperPath:'',piperVoice:'',
   whisperCppPath:'',whisperCppModel:'',
   mascotModelPath:'model/model 1/ai_assistant_model.model3.json',
+  mascotDragShortcutEnabled:true,
   chatFontSize:14,theme:'dark',
   mascotVisible:true,clickThrough:true,borderVisible:false,alwaysOnTop:true,behindTaskbar:false,
   mascotX:1261,mascotY:264,mascotWidth:200,mascotHeight:220,scale:0.25,
@@ -177,8 +178,6 @@ ipcRenderer.on('state-update',(_,u)=>{
   if(u.behindTaskbar!=null){cfg.behindTaskbar=u.behindTaskbar;document.getElementById('tog-taskbar').checked=cfg.behindTaskbar;}
   if(u.mascotX!=null){cfg.mascotX=u.mascotX;setEl('pos-x',cfg.mascotX);}
   if(u.mascotY!=null){cfg.mascotY=u.mascotY;setEl('pos-y',cfg.mascotY);}
-  if(u.mascotWidth!=null){cfg.mascotWidth=u.mascotWidth;setEl('win-w',cfg.mascotWidth);}
-  if(u.mascotHeight!=null){cfg.mascotHeight=u.mascotHeight;setEl('win-h',cfg.mascotHeight);}
 });
 ipcRenderer.on('save-confirmed',()=>flash('mascot-save-ok'));
 ipcRenderer.on('chat-history-cleared',()=>{chatHistory=[];clearChatUI();});
@@ -239,6 +238,7 @@ function applyConfig(){
   setEl('whispercpp-model',cfg.whisperCppModel||'');
   setEl('mascot-model-select',cfg.mascotModelPath||'');
   tv('mascot-model-note',cfg.mascotModelPath||'');
+  ck('tog-drag-shortcut',cfg.mascotDragShortcutEnabled!==false);
   setEl('openai-tts-key',cfg.openaiTTSKey||cfg.openaiKey||'');
   setEl('openai-tts-model',cfg.openaiTTSModel||'tts-1');
   openAITTSVoice=cfg.openaiTTSVoice||'nova';
@@ -248,7 +248,6 @@ function applyConfig(){
   selectedElevenVoiceId=cfg.elevenVoiceId||'';
   // Mascot
   setEl('pos-x',cfg.mascotX);setEl('pos-y',cfg.mascotY);
-  setEl('win-w',cfg.mascotWidth);setEl('win-h',cfg.mascotHeight);
   setEl('scale-slider',cfg.scale);tv('scale-val',cfg.scale?.toFixed(2)||'0.25');
   ck('tog-mascot',cfg.mascotVisible);ck('tog-click',cfg.clickThrough);
   ck('tog-border',cfg.borderVisible);ck('tog-ontop',cfg.alwaysOnTop);ck('tog-taskbar',cfg.behindTaskbar);
@@ -2873,24 +2872,24 @@ document.getElementById('looks-save-btn').onclick=()=>{
 // ─── Mascot toggles ───────────────────────────────────────
 document.getElementById('tog-mascot').onchange=e=>{cfg.mascotVisible=e.target.checked;ipcRenderer.send('toggle-mascot',cfg.mascotVisible);};
 document.getElementById('tog-click').onchange=e=>{cfg.clickThrough=e.target.checked;ipcRenderer.send('toggle-click-through',cfg.clickThrough);};
+document.getElementById('tog-drag-shortcut').onchange=e=>{cfg.mascotDragShortcutEnabled=e.target.checked;ipcRenderer.send('toggle-mascot-drag-shortcut',cfg.mascotDragShortcutEnabled);};
 document.getElementById('tog-border')?.addEventListener('change',e=>{cfg.borderVisible=e.target.checked;ipcRenderer.send('toggle-border',cfg.borderVisible);});
 document.getElementById('tog-ontop').onchange=e=>{cfg.alwaysOnTop=e.target.checked;if(cfg.alwaysOnTop){cfg.behindTaskbar=false;ck('tog-taskbar',false);}ipcRenderer.send('toggle-always-on-top',cfg.alwaysOnTop);};
 document.getElementById('tog-taskbar').onchange=e=>{cfg.behindTaskbar=e.target.checked;if(cfg.behindTaskbar){cfg.alwaysOnTop=false;ck('tog-ontop',false);}ipcRenderer.send('toggle-behind-taskbar',cfg.behindTaskbar);};
 
-const sendPos=()=>ipcRenderer.send('preview-position',{x:cfg.mascotX,y:cfg.mascotY});
-const sendSize=()=>ipcRenderer.send('preview-size',{width:cfg.mascotWidth,height:cfg.mascotHeight});
-document.getElementById('x-m').onclick=()=>{cfg.mascotX-=5;setEl('pos-x',cfg.mascotX);sendPos();};
-document.getElementById('x-p').onclick=()=>{cfg.mascotX+=5;setEl('pos-x',cfg.mascotX);sendPos();};
-document.getElementById('y-m').onclick=()=>{cfg.mascotY-=5;setEl('pos-y',cfg.mascotY);sendPos();};
-document.getElementById('y-p').onclick=()=>{cfg.mascotY+=5;setEl('pos-y',cfg.mascotY);sendPos();};
-document.getElementById('pos-x').oninput=e=>{cfg.mascotX=parseInt(e.target.value)||0;sendPos();};
-document.getElementById('pos-y').oninput=e=>{cfg.mascotY=parseInt(e.target.value)||0;sendPos();};
-document.getElementById('w-m').onclick=()=>{cfg.mascotWidth=Math.max(50,cfg.mascotWidth-10);setEl('win-w',cfg.mascotWidth);sendSize();};
-document.getElementById('w-p').onclick=()=>{cfg.mascotWidth+=10;setEl('win-w',cfg.mascotWidth);sendSize();};
-document.getElementById('h-m').onclick=()=>{cfg.mascotHeight=Math.max(50,cfg.mascotHeight-10);setEl('win-h',cfg.mascotHeight);sendSize();};
-document.getElementById('h-p').onclick=()=>{cfg.mascotHeight+=10;setEl('win-h',cfg.mascotHeight);sendSize();};
-document.getElementById('win-w').oninput=e=>{cfg.mascotWidth=Math.max(50,parseInt(e.target.value)||50);sendSize();};
-document.getElementById('win-h').oninput=e=>{cfg.mascotHeight=Math.max(50,parseInt(e.target.value)||50);sendSize();};
+function previewMascotPosition(x,y){
+  cfg.mascotX=Math.round(x);
+  cfg.mascotY=Math.round(y);
+  setEl('pos-x',cfg.mascotX);
+  setEl('pos-y',cfg.mascotY);
+  ipcRenderer.send('preview-position',{x:cfg.mascotX,y:cfg.mascotY});
+}
+document.getElementById('x-m').onclick=()=>previewMascotPosition((cfg.mascotX||0)-5,cfg.mascotY||0);
+document.getElementById('x-p').onclick=()=>previewMascotPosition((cfg.mascotX||0)+5,cfg.mascotY||0);
+document.getElementById('y-m').onclick=()=>previewMascotPosition(cfg.mascotX||0,(cfg.mascotY||0)-5);
+document.getElementById('y-p').onclick=()=>previewMascotPosition(cfg.mascotX||0,(cfg.mascotY||0)+5);
+document.getElementById('pos-x').onchange=e=>previewMascotPosition(parseInt(e.target.value,10)||0,cfg.mascotY||0);
+document.getElementById('pos-y').onchange=e=>previewMascotPosition(cfg.mascotX||0,parseInt(e.target.value,10)||0);
 document.getElementById('scale-slider').oninput=e=>{
   cfg.scale=parseFloat(e.target.value);
   tv('scale-val',cfg.scale.toFixed(2));
@@ -2904,9 +2903,9 @@ document.getElementById('mascot-model-select')?.addEventListener('change',e=>{
   previewMascotModel(e.target.value);
 });
 document.getElementById('mascot-save-btn').onclick=()=>{
-  cfg.mascotX=parseInt(val('pos-x'))||cfg.mascotX;cfg.mascotY=parseInt(val('pos-y'))||cfg.mascotY;
-  cfg.mascotWidth=parseInt(val('win-w'))||cfg.mascotWidth;cfg.mascotHeight=parseInt(val('win-h'))||cfg.mascotHeight;
+  previewMascotPosition(parseInt(val('pos-x'),10)||cfg.mascotX,parseInt(val('pos-y'),10)||cfg.mascotY);
   cfg.scale=parseFloat(val('scale-slider'));
+  cfg.mascotDragShortcutEnabled=!!document.getElementById('tog-drag-shortcut').checked;
   cfg.mascotModelPath=val('mascot-model-select')||cfg.mascotModelPath;
   ipcRenderer.send('save-config',{...cfg});flash('mascot-save-ok');
 };

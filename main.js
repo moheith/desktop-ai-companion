@@ -4,8 +4,8 @@ const memory = require('./memory');
 
 const store = new Store({
   defaults: {
-    mascotX:1261,mascotY:264,mascotWidth:200,mascotHeight:220,
-    scale:0.25,mascotVisible:true,clickThrough:true,borderVisible:false,
+    mascotX:1261,mascotY:264,mascotWidth:200,mascotHeight:220,mascotPlacementMode:'window',
+    scale:0.25,mascotVisible:true,clickThrough:true,borderVisible:false,mascotDragShortcutEnabled:true,
     alwaysOnTop:true,behindTaskbar:false,
     aiProvider:'ollama',
     ollamaModel:'llama3',ollamaUrl:'http://localhost:11434',
@@ -42,10 +42,33 @@ const store = new Store({
 });
 
 let mascot=null, controlPanel=null, tray=null;
-let mascotHovering=false;
+let mascotInteractionArmed=false;
 let mascotDragging=false;
 let mascotDragOffset={ x: 0, y: 0 };
 let mascotDragTick=null;
+
+function ensureMascotPlacementMode() {
+  if (store.get('mascotPlacementMode') === 'window') return;
+  const width = Number(store.get('mascotWidth')) || 200;
+  const height = Number(store.get('mascotHeight')) || 220;
+  const anchorX = Number(store.get('mascotX')) || 0;
+  const anchorY = Number(store.get('mascotY')) || 0;
+  store.set('mascotX', Math.round(anchorX - (width / 2)));
+  store.set('mascotY', Math.round(anchorY - height));
+  store.set('mascotPlacementMode', 'window');
+}
+
+function setMascotPosition(x, y, { persist=false } = {}) {
+  if (!mascot || mascot.isDestroyed()) return;
+  const nextX = Math.round(x);
+  const nextY = Math.round(y);
+  mascot.setPosition(nextX, nextY);
+  if (persist) {
+    store.set('mascotX', nextX);
+    store.set('mascotY', nextY);
+  }
+  syncMascotStateToPanel();
+}
 
 function applyWindowLevel() {
   if (!mascot||mascot.isDestroyed()) return;
@@ -56,19 +79,18 @@ function applyWindowLevel() {
 
 function syncMascotMouseMode() {
   if (!mascot || mascot.isDestroyed()) return;
-  const shouldIgnore = store.get('clickThrough') && !mascotHovering && !mascotDragging;
+  const shouldIgnore = store.get('clickThrough')
+    && !(store.get('mascotDragShortcutEnabled') && mascotInteractionArmed)
+    && !mascotDragging;
   mascot.setIgnoreMouseEvents(shouldIgnore, { forward: true });
 }
 
 function syncMascotStateToPanel() {
   if (!mascot || mascot.isDestroyed()) return;
   const [x, y] = mascot.getPosition();
-  const [width, height] = mascot.getSize();
   controlPanel?.webContents.send('state-update', {
     mascotX: x,
     mascotY: y,
-    mascotWidth: width,
-    mascotHeight: height,
   });
 }
 
@@ -77,12 +99,7 @@ function startMascotDragLoop() {
   mascotDragTick = setInterval(() => {
     if (!mascotDragging || !mascot || mascot.isDestroyed()) return;
     const point = screen.getCursorScreenPoint();
-    const nextX = Math.round(point.x - mascotDragOffset.x);
-    const nextY = Math.round(point.y - mascotDragOffset.y);
-    mascot.setPosition(nextX, nextY);
-    store.set('mascotX', nextX);
-    store.set('mascotY', nextY);
-    syncMascotStateToPanel();
+    setMascotPosition(point.x - mascotDragOffset.x, point.y - mascotDragOffset.y, { persist:true });
   }, 16);
 }
 
@@ -93,9 +110,14 @@ function stopMascotDragLoop() {
 }
 
 function createMascot() {
+  ensureMascotPlacementMode();
+  const width = store.get('mascotWidth');
+  const height = store.get('mascotHeight');
   mascot=new BrowserWindow({
-    width:store.get('mascotWidth'),height:store.get('mascotHeight'),
-    x:store.get('mascotX'),y:store.get('mascotY'),
+    width,
+    height,
+    x:store.get('mascotX'),
+    y:store.get('mascotY'),
     transparent:true,frame:false,skipTaskbar:true,resizable:false,
     webPreferences:{nodeIntegration:true,contextIsolation:false},
   });
@@ -151,37 +173,36 @@ ipcMain.on('minimize-panel',()=>controlPanel?.minimize());
 ipcMain.on('maximize-panel',()=>{if(!controlPanel)return;controlPanel.isMaximized()?controlPanel.unmaximize():controlPanel.maximize();});
 ipcMain.on('toggle-mascot',(_, val)=>{store.set('mascotVisible',val);if(!mascot||mascot.isDestroyed())return;if(val){mascot.show();applyWindowLevel();}else mascot.hide();});
 ipcMain.on('toggle-click-through',(_, val)=>{store.set('clickThrough',val);syncMascotMouseMode();});
+ipcMain.on('toggle-mascot-drag-shortcut',(_, val)=>{
+  store.set('mascotDragShortcutEnabled',val);
+  if(!val) mascotInteractionArmed=false;
+  mascot?.webContents.send('set-drag-shortcut',{enabled:!!val});
+  syncMascotMouseMode();
+});
 ipcMain.on('toggle-border',(_, val)=>{store.set('borderVisible',val);mascot?.webContents.send('set-border',val);});
 ipcMain.on('toggle-always-on-top',(_, val)=>{store.set('alwaysOnTop',val);if(val)store.set('behindTaskbar',false);applyWindowLevel();controlPanel?.webContents.send('state-update',{behindTaskbar:store.get('behindTaskbar')});});
 ipcMain.on('toggle-behind-taskbar',(_, val)=>{store.set('behindTaskbar',val);if(val)store.set('alwaysOnTop',false);applyWindowLevel();controlPanel?.webContents.send('state-update',{alwaysOnTop:store.get('alwaysOnTop')});});
 ipcMain.on('preview-position',(_, {x,y})=>{
-  mascot?.setPosition(x,y);
-  syncMascotStateToPanel();
-});
-ipcMain.on('preview-size',(_, {width,height})=>{
-  if(!mascot)return;
-  mascot.setSize(width,height);
-  mascot.webContents.send('set-size',{width,height});
-  syncMascotStateToPanel();
+  setMascotPosition(x,y);
 });
 ipcMain.on('preview-scale',(_, {scale})=>mascot?.webContents.send('set-scale',{scale}));
 ipcMain.on('preview-mascot-model',(_, {modelPath})=>{mascot?.webContents.send('set-model',{modelPath});});
-ipcMain.on('mascot-hover-state',(_, { hovered })=>{
-  mascotHovering = !!hovered;
+ipcMain.on('mascot-interaction-arm',(_, { armed })=>{
+  mascotInteractionArmed = !!armed;
   syncMascotMouseMode();
 });
 ipcMain.on('mascot-drag-start',(_, payload={})=>{
   mascotDragging = true;
-  mascotHovering = true;
-  mascotDragOffset = {
-    x: Number(payload.offsetX) || 0,
-    y: Number(payload.offsetY) || 0,
-  };
+  mascotInteractionArmed = true;
+  const point = screen.getCursorScreenPoint();
+  const [x, y] = mascot.getPosition();
+  mascotDragOffset = { x: point.x - x, y: point.y - y };
   syncMascotMouseMode();
   startMascotDragLoop();
 });
 ipcMain.on('mascot-drag-end',()=>{
   mascotDragging = false;
+  mascotInteractionArmed = false;
   syncMascotMouseMode();
   stopMascotDragLoop();
   syncMascotStateToPanel();
@@ -189,6 +210,7 @@ ipcMain.on('mascot-drag-end',()=>{
 ipcMain.on('save-config',(_, cfg)=>{
   Object.entries(cfg).forEach(([k,v])=>{if(k!=='memory')store.set(k,v);});
   if(cfg.mascotModelPath) mascot?.webContents.send('set-model',{modelPath:cfg.mascotModelPath});
+  if(cfg.mascotDragShortcutEnabled!=null) mascot?.webContents.send('set-drag-shortcut',{enabled:!!cfg.mascotDragShortcutEnabled});
   syncMascotMouseMode();
   controlPanel?.webContents.send('save-confirmed');
 });
@@ -216,6 +238,7 @@ ipcMain.handle('get-mascot-context',()=>{
     bounds: mascot.getBounds(),
     cursor: screen.getCursorScreenPoint(),
     clickThrough: store.get('clickThrough'),
+    dragShortcutEnabled: store.get('mascotDragShortcutEnabled'),
     dragging: mascotDragging,
   };
 });
