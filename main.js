@@ -47,6 +47,47 @@ let mascotDragging=false;
 let mascotDragStartCursor={ x: 0, y: 0 };
 let mascotDragStartWindow={ x: 0, y: 0 };
 let mascotDragTick=null;
+const MASCOT_STAGE_WIDTH = 360;
+const MASCOT_STAGE_HEIGHT = 520;
+
+function sanitizeMessageContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        if (part?.type === 'text' && typeof part?.text === 'string') return part.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  if (content && typeof content === 'object') {
+    if (typeof content.text === 'string') return content.text;
+    if (typeof content.content === 'string') return content.content;
+  }
+  return '';
+}
+
+function sanitizeChatHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map(entry => {
+      const role = entry?.role === 'assistant' ? 'assistant' : 'user';
+      const content = sanitizeMessageContent(entry?.content);
+      if (!content) return null;
+      return { role, content };
+    })
+    .filter(Boolean)
+    .slice(-100);
+}
+
+function normalizeMascotWindowState() {
+  if (Number(store.get('mascotWidth')) !== MASCOT_STAGE_WIDTH) store.set('mascotWidth', MASCOT_STAGE_WIDTH);
+  if (Number(store.get('mascotHeight')) !== MASCOT_STAGE_HEIGHT) store.set('mascotHeight', MASCOT_STAGE_HEIGHT);
+}
 
 function setMascotPosition(x, y, { persist=false } = {}) {
   if (!mascot || mascot.isDestroyed()) return;
@@ -104,8 +145,8 @@ function stopMascotDragLoop() {
 function getDefaultMascotPosition() {
   const display = screen.getPrimaryDisplay();
   const area = display.workArea;
-  const width = Number(store.get('mascotWidth')) || 200;
-  const height = Number(store.get('mascotHeight')) || 220;
+  const width = MASCOT_STAGE_WIDTH;
+  const height = MASCOT_STAGE_HEIGHT;
   return {
     x: Math.round(area.x + area.width - width - 48),
     y: Math.round(area.y + area.height - height - 48),
@@ -113,8 +154,9 @@ function getDefaultMascotPosition() {
 }
 
 function createMascot() {
-  const width = store.get('mascotWidth');
-  const height = store.get('mascotHeight');
+  normalizeMascotWindowState();
+  const width = MASCOT_STAGE_WIDTH;
+  const height = MASCOT_STAGE_HEIGHT;
   mascot=new BrowserWindow({
     width,
     height,
@@ -149,7 +191,11 @@ function createControlPanel() {
   });
   controlPanel.loadFile('control.html');
   controlPanel.webContents.on('did-finish-load',()=>{
-    controlPanel.webContents.send('init-config',{...store.store,memory:memory.getMemory()});
+    const chatHistory=sanitizeChatHistory(store.get('chatHistory',[]));
+    if(JSON.stringify(chatHistory)!==JSON.stringify(store.get('chatHistory',[]))){
+      store.set('chatHistory',chatHistory);
+    }
+    controlPanel.webContents.send('init-config',{...store.store,chatHistory,memory:memory.getMemory()});
   });
   controlPanel.on('closed',()=>{controlPanel=null;});
 }
@@ -190,6 +236,8 @@ ipcMain.on('preview-position',(_, {x,y})=>{
 ipcMain.on('preview-mascot-reset',()=>{
   const pos = getDefaultMascotPosition();
   setMascotPosition(pos.x, pos.y);
+  normalizeMascotWindowState();
+  mascot?.setSize(MASCOT_STAGE_WIDTH, MASCOT_STAGE_HEIGHT);
   mascot?.webContents.send('set-scale',{scale:0.25});
   controlPanel?.webContents.send('state-update',{mascotScale:0.25});
 });
@@ -217,13 +265,18 @@ ipcMain.on('mascot-drag-end',()=>{
   syncMascotStateToPanel();
 });
 ipcMain.on('save-config',(_, cfg)=>{
-  Object.entries(cfg).forEach(([k,v])=>{if(k!=='memory')store.set(k,v);});
+  Object.entries(cfg).forEach(([k,v])=>{
+    if(k==='memory' || k==='mascotWidth' || k==='mascotHeight' || k==='width' || k==='height') return;
+    store.set(k,v);
+  });
+  normalizeMascotWindowState();
+  mascot?.setSize(MASCOT_STAGE_WIDTH, MASCOT_STAGE_HEIGHT);
   if(cfg.mascotModelPath) mascot?.webContents.send('set-model',{modelPath:cfg.mascotModelPath});
   if(cfg.mascotDragShortcutEnabled!=null) mascot?.webContents.send('set-drag-shortcut',{enabled:!!cfg.mascotDragShortcutEnabled});
   syncMascotMouseMode();
   controlPanel?.webContents.send('save-confirmed');
 });
-ipcMain.on('save-chat-history',(_, h)=>store.set('chatHistory',h.slice(-100)));
+ipcMain.on('save-chat-history',(_, h)=>store.set('chatHistory',sanitizeChatHistory(h)));
 ipcMain.on('clear-chat-history',()=>{store.set('chatHistory',[]);controlPanel?.webContents.send('chat-history-cleared');});
 ipcMain.on('memory-set-name',       (_, n)=>memory.setUserName(n));
 ipcMain.on('memory-set-personality',(_, t)=>memory.setPersonality(t));

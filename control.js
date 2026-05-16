@@ -264,9 +264,12 @@ function applyConfig(){
   tv('mbadge',getModelLabel());
   // Chat history
   if(cfg.chatHistory?.length>0){
-    chatHistory=cfg.chatHistory;
+    chatHistory=sanitizeChatHistory(cfg.chatHistory);
     chatHistory.forEach(m=>renderMsg(m.role==='user'?'user':'ai',m.content,false));
     scrollChat();
+    if(JSON.stringify(chatHistory)!==JSON.stringify(cfg.chatHistory)){
+      ipcRenderer.send('save-chat-history',chatHistory);
+    }
   }
   // STT
   setupMic();
@@ -2114,6 +2117,40 @@ let transcribeAbortController=null;
 let transcribeChildProcess=null;
 let transcriptionCanceled=false;
 
+function sanitizeMessageContent(content){
+  if(typeof content==='string') return content;
+  if(Array.isArray(content)){
+    return content
+      .map(part=>{
+        if(typeof part==='string') return part;
+        if(part && typeof part.text==='string') return part.text;
+        if(part?.type==='text' && typeof part.text==='string') return part.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  if(content && typeof content==='object'){
+    if(typeof content.text==='string') return content.text;
+    if(typeof content.content==='string') return content.content;
+  }
+  return '';
+}
+
+function sanitizeChatHistory(history){
+  if(!Array.isArray(history)) return [];
+  return history
+    .map(entry=>{
+      const role=entry?.role==='assistant'?'assistant':'user';
+      const content=sanitizeMessageContent(entry?.content);
+      if(!content) return null;
+      return { role, content };
+    })
+    .filter(Boolean)
+    .slice(-100);
+}
+
 function getWhisperKey(){
   return cfg.openaiTTSKey || cfg.openaiKey || '';
 }
@@ -2553,6 +2590,7 @@ function setupMic(){
   if(!btn)return;
   if(!cfg.sttEnabled){
     btn.classList.remove('active-display');
+    btn.title='Microphone is disabled - turn on Enable Microphone in Mic settings';
     if(isListening) stopListening(false);
     return;
   }
@@ -2561,6 +2599,11 @@ function setupMic(){
 }
 
 async function startListening(){
+  if(!cfg.sttEnabled){
+    showInterim('Microphone is disabled - turn it on in Mic settings');
+    setTimeout(()=>showInterim(''),3000);
+    return;
+  }
   if(isListening||!ensureSTTConfigured()) return;
   if(!voiceListeningMode) voiceListeningMode='manual';
   stopWakeWordListener();
@@ -3041,6 +3084,7 @@ async function send(){
   const inp=document.getElementById('chat-input');
   const text=inp.value.trim();
   if(!text||isThinking)return;
+  chatHistory=sanitizeChatHistory(chatHistory);
   const wasVoiceDriven=isFollowupWindowActive() || voiceListeningMode==='wake' || voiceListeningMode==='followup';
   hideTranscriptPreview(true);
   inp.value='';inp.style.height='auto';
