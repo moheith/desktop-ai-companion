@@ -107,7 +107,7 @@ mic/whisper-bin-x64/Release/models/ggml-base.bin
 
 Then in the app:
 
-1. Open `Voice Settings`
+1. Open `Mic`
 2. Enable `Microphone`
 3. Set `STT Engine` to `Local whisper.cpp`
 4. Set `Language` to `Auto detect`
@@ -123,7 +123,7 @@ mic\whisper-bin-x64\Release\whisper-cli.exe
 mic\whisper-bin-x64\Release\models\ggml-base.bin
 ```
 
-7. Save Voice Settings
+7. Save Mic Settings
 
 For packaged builds in `dist/`, the app now copies the `mic/` runtime into the packaged app resources automatically. After rebuilding, local STT should work from the packaged `.exe` without needing a dev-only relative path.
 
@@ -133,8 +133,8 @@ If you prefer cloud transcription:
 
 1. Open `AI Model -> OpenAI`
 2. Add your API key
-3. In `Voice Settings`, choose `OpenAI Whisper`
-4. Save
+3. In `Mic`, choose `OpenAI Whisper`
+4. Save Mic Settings
 
 ### Wake Word Options
 
@@ -156,13 +156,13 @@ What you need:
 
 Then in the app:
 
-1. Open `Voice Settings`
+1. Open `Mic`
 2. Enable `Microphone`
 3. Keep `STT Engine` on `Local whisper.cpp`
 4. Turn on `Wake word`
 5. Paste your Porcupine `AccessKey`
 6. Add the full path to your `.ppn` keyword file
-7. Save Voice Settings
+7. Save Mic Settings
 
 Wake-word detection is offline after setup. If you also use Ollama and local TTS, the full voice loop can run offline.
 
@@ -207,21 +207,59 @@ Notes:
 
 ```text
 desktop-ai-companion/
-|-- main.js
-|-- renderer.js
-|-- control.html
-|-- control.js
-|-- assistant.js
-|-- memory.js
+|-- main.js                 # thin Electron entry wrapper
+|-- control.js              # thin control-panel wrapper
+|-- renderer.js             # thin mascot-renderer wrapper
+|-- memory.js               # thin memory wrapper
+|-- assistant.js            # legacy preview wrapper
+|-- control.html            # control panel HTML shell
+|-- index.html              # mascot window HTML shell
+|-- src/
+|   |-- main/
+|   |   |-- index.js        # Electron main process
+|   |   `-- memory-store.js # persistent memory store
+|   |-- panel/
+|   |   `-- index.js        # control panel logic
+|   |-- mascot/
+|   |   `-- index.js        # desktop mascot renderer
+|   |-- legacy/
+|   |   `-- assistant-preview.js
+|   `-- shared/
+|       |-- app-defaults.js # shared defaults and path normalization
+|       `-- chat-history.js # chat-history sanitization helpers
+|-- docs/
+|   `-- ARCHITECTURE.md
 |-- package.json
 |-- mic/
 |   `-- whisper.cpp runtime files
 |-- model/
-|   `-- live2d model files
-|-- node_modules/
-|-- dist/
+|   |-- assistant-legacy/
+|   |-- custom-mascot-v1/
+|   |-- custom-mascot-v2/
+|   `-- other bundled Live2D models
+|-- art/
+|   `-- working mascot source files
+|-- voices/
+|   `-- local TTS runtime files
 `-- .gitignore
 ```
+
+## Persistent Data
+
+The app stores runtime data in Electron Store under:
+
+```text
+%APPDATA%\desktop-mascot\
+```
+
+Important files:
+
+* `config.json`  
+  App settings, selected model, AI provider settings, mic settings, chat history
+* `companion-memory.json`  
+  User memory, facts, summaries, mood state
+
+These files are local runtime data, not source files.
 
 ---
 

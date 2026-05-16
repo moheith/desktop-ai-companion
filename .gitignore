@@ -3,3 +3,6 @@ dist
 mic/**/models/
 mic/**/*.bin
 problems
+art/**/*.psd~
+art/**/*.psd~~
+voices/**/output.wav
